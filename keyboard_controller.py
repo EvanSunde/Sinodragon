@@ -2,9 +2,9 @@ import hid
 import time
 import logging
 
-# Update logging configuration to be more verbose
+# Update logging configuration to use INFO level
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )

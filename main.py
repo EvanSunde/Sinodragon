@@ -3,9 +3,9 @@ import logging
 from PyQt5.QtWidgets import QApplication
 from keyboard_layout import KeyboardConfigApp
 
-# Configure logging
+# Configure logging with INFO level instead of DEBUG
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     filename='keyboard_app.log',  # Also save to file
