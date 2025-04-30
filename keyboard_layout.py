@@ -3,13 +3,78 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QPushButton,
                            QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
                            QComboBox, QColorDialog, QLineEdit, QMessageBox, QSlider,
                            QGroupBox, QCheckBox, QFrame)
-from PyQt5.QtGui import QColor, QPalette, QFont
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QPalette, QFont, QKeySequence
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QEvent
 import time
 import colorsys
+import threading
 
 from keyboard_controller import KeyboardController
 from config_manager import ConfigManager
+from shortcut_manager import ShortcutManager
+
+# Define a key mapping between Qt key constants and our keyboard layout key names
+QT_KEY_MAP = {
+    Qt.Key_Control: "Ctrl",
+    Qt.Key_Shift: "Shift",
+    Qt.Key_Alt: "Alt",
+    Qt.Key_Meta: "Win",
+    Qt.Key_Super_L: "Win",
+    Qt.Key_Super_R: "Win",
+    
+    # Letters
+    Qt.Key_A: "A", Qt.Key_B: "B", Qt.Key_C: "C", Qt.Key_D: "D",
+    Qt.Key_E: "E", Qt.Key_F: "F", Qt.Key_G: "G", Qt.Key_H: "H",
+    Qt.Key_I: "I", Qt.Key_J: "J", Qt.Key_K: "K", Qt.Key_L: "L",
+    Qt.Key_M: "M", Qt.Key_N: "N", Qt.Key_O: "O", Qt.Key_P: "P",
+    Qt.Key_Q: "Q", Qt.Key_R: "R", Qt.Key_S: "S", Qt.Key_T: "T",
+    Qt.Key_U: "U", Qt.Key_V: "V", Qt.Key_W: "W", Qt.Key_X: "X",
+    Qt.Key_Y: "Y", Qt.Key_Z: "Z",
+    
+    # Numbers
+    Qt.Key_0: "0", Qt.Key_1: "1", Qt.Key_2: "2", Qt.Key_3: "3",
+    Qt.Key_4: "4", Qt.Key_5: "5", Qt.Key_6: "6", Qt.Key_7: "7",
+    Qt.Key_8: "8", Qt.Key_9: "9",
+    
+    # Function keys
+    Qt.Key_F1: "F1", Qt.Key_F2: "F2", Qt.Key_F3: "F3", Qt.Key_F4: "F4",
+    Qt.Key_F5: "F5", Qt.Key_F6: "F6", Qt.Key_F7: "F7", Qt.Key_F8: "F8",
+    Qt.Key_F9: "F9", Qt.Key_F10: "F10", Qt.Key_F11: "F11", Qt.Key_F12: "F12",
+    
+    # Other common keys
+    Qt.Key_Escape: "Esc",
+    Qt.Key_Tab: "Tab",
+    Qt.Key_CapsLock: "Caps",
+    Qt.Key_Backspace: "Bksp",
+    Qt.Key_Return: "Enter",
+    Qt.Key_Space: "Space",
+    Qt.Key_Insert: "Ins",
+    Qt.Key_Delete: "Del",
+    Qt.Key_Home: "Home",
+    Qt.Key_End: "End",
+    Qt.Key_PageUp: "PgUp",
+    Qt.Key_PageDown: "PgDn",
+    Qt.Key_Left: "←",
+    Qt.Key_Right: "→",
+    Qt.Key_Up: "↑",
+    Qt.Key_Down: "↓",
+    Qt.Key_Print: "PrtSc",
+    Qt.Key_ScrollLock: "ScrLk",
+    Qt.Key_Pause: "Pause",
+    
+    # Special characters
+    Qt.Key_Backslash: "\\",
+    Qt.Key_BracketLeft: "[",
+    Qt.Key_BracketRight: "]",
+    Qt.Key_Semicolon: ";",
+    Qt.Key_Apostrophe: "'",
+    Qt.Key_Comma: ",",
+    Qt.Key_Period: ".",
+    Qt.Key_Slash: "/",
+    Qt.Key_Minus: "-",
+    Qt.Key_Equal: "=",
+    Qt.Key_QuoteLeft: "`"
+}
 
 class KeyButton(QPushButton):
     def __init__(self, key_name, index, parent=None):
@@ -79,10 +144,18 @@ class KeyboardConfigApp(QMainWindow):
         super().__init__()
         self.keyboard = KeyboardController()
         self.config_manager = ConfigManager()
+        self.shortcut_manager = ShortcutManager()
         self.keys = []
         self.selected_keys = []
         self.current_color = QColor(0, 255, 0)  # Default working color is green
         self.selection_mode = False
+        
+        # Keyboard monitoring variables
+        self.shortcut_monitor_active = False
+        self.currently_pressed_keys = set()
+        self.highlighted_keys = []
+        self.original_key_colors = {}
+        self.highlight_color = QColor(255, 165, 0)  # Orange highlight color
         
         # Setup auto-reload before calling load_config
         self.auto_reload = True
@@ -94,6 +167,34 @@ class KeyboardConfigApp(QMainWindow):
         # Load default configuration
         self.load_config()
         
+        # Install event filter to catch key events
+        QApplication.instance().installEventFilter(self)
+    
+    def eventFilter(self, obj, event):
+        """Filter keyboard events for shortcut highlighting"""
+        if not self.shortcut_monitor_active:
+            return super().eventFilter(obj, event)
+            
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key in QT_KEY_MAP:
+                key_name = QT_KEY_MAP[key]
+                self.currently_pressed_keys.add(key_name)
+                self.update_key_highlights()
+                
+        elif event.type() == QEvent.KeyRelease:
+            key = event.key()
+            if key in QT_KEY_MAP:
+                key_name = QT_KEY_MAP[key]
+                if key_name in self.currently_pressed_keys:
+                    self.currently_pressed_keys.remove(key_name)
+                
+                # If no keys are pressed anymore, restore original colors
+                if not self.currently_pressed_keys:
+                    self.restore_highlighted_keys()
+        
+        return super().eventFilter(obj, event)
+    
     def setupUI(self):
         self.setWindowTitle("Keyboard LED Configuration")
         self.setMinimumSize(1100, 650)
@@ -275,23 +376,23 @@ class KeyboardConfigApp(QMainWindow):
         selection_controls = QVBoxLayout()
         
         # Selected region color adjustment
-        selection_color_btn = QPushButton("Set Region Color")
-        selection_color_btn.clicked.connect(self.set_selection_color)
+        selection_color_btn = QPushButton("Apply Current Color to Region")
+        selection_color_btn.clicked.connect(self.set_region_color)
         selection_controls.addWidget(selection_color_btn)
         
         # Selected region brightness
         selection_brightness_layout = QHBoxLayout()
         selection_brightness_layout.addWidget(QLabel("Region Brightness:"))
         
-        self.selection_intensity_slider = QSlider(Qt.Horizontal)
-        self.selection_intensity_slider.setMinimum(0)
-        self.selection_intensity_slider.setMaximum(100)
-        self.selection_intensity_slider.setValue(100)
-        self.selection_intensity_slider.valueChanged.connect(self.selection_intensity_changed)
-        selection_brightness_layout.addWidget(self.selection_intensity_slider)
+        self.region_intensity_slider = QSlider(Qt.Horizontal)
+        self.region_intensity_slider.setMinimum(0)
+        self.region_intensity_slider.setMaximum(100)
+        self.region_intensity_slider.setValue(100)
+        self.region_intensity_slider.valueChanged.connect(self.region_intensity_changed)
+        selection_brightness_layout.addWidget(self.region_intensity_slider)
         
-        self.selection_intensity_label = QLabel("100%")
-        selection_brightness_layout.addWidget(self.selection_intensity_label)
+        self.region_intensity_label = QLabel("100%")
+        selection_brightness_layout.addWidget(self.region_intensity_label)
         
         selection_controls.addLayout(selection_brightness_layout)
         
@@ -320,6 +421,35 @@ class KeyboardConfigApp(QMainWindow):
         
         presets_group.setLayout(presets_layout)
         controls_panel.addWidget(presets_group)
+        
+        # After the presets group, add shortcut monitoring controls
+        shortcut_group = QGroupBox("Shortcut Monitoring")
+        shortcut_layout = QVBoxLayout()
+        
+        # Enable/disable shortcut monitoring
+        self.shortcut_toggle = QPushButton("Start Shortcut Monitor")
+        self.shortcut_toggle.setCheckable(True)
+        self.shortcut_toggle.clicked.connect(self.toggle_shortcut_monitor)
+        shortcut_layout.addWidget(self.shortcut_toggle)
+        
+        # Highlight color selection
+        highlight_color_layout = QHBoxLayout()
+        highlight_color_layout.addWidget(QLabel("Highlight Color:"))
+        
+        self.highlight_color_display = ColorDisplay(self.highlight_color)
+        self.highlight_color_display.clicked.connect(self.choose_highlight_color)
+        highlight_color_layout.addWidget(self.highlight_color_display)
+        
+        shortcut_layout.addLayout(highlight_color_layout)
+        
+        # Manage shortcuts button
+        manage_shortcuts_btn = QPushButton("Manage Shortcuts")
+        manage_shortcuts_btn.clicked.connect(self.manage_shortcuts)
+        shortcut_layout.addWidget(manage_shortcuts_btn)
+        
+        # Add shortcut group to layout
+        shortcut_group.setLayout(shortcut_layout)
+        controls_panel.addWidget(shortcut_group)
         
         # Add stretch to push controls to the top
         controls_panel.addStretch()
@@ -361,43 +491,38 @@ class KeyboardConfigApp(QMainWindow):
             key.setSelected(False)
         self.selected_keys = []
     
-    def set_selection_color(self):
-        """Set the color for all selected keys"""
+    def set_region_color(self):
+        """Apply the current color to the selected region with the region's intensity"""
         if not self.selected_keys:
-            QMessageBox.information(self, "No Selection", "Please select keys first (enable selection mode and click on keys)")
+            QMessageBox.information(self, "No Selection", "Please select keys first (enable Selection Mode and click on keys)")
             return
-            
-        color = QColorDialog.getColor(self.current_color, self, "Select Color for Region")
-        if color.isValid():
-            for key in self.selected_keys:
-                key.setKeyColor(color)
-            
-            if self.auto_reload and self.keyboard.connected:
-                self.send_config()
-    
-    def selection_intensity_changed(self):
-        """Adjust brightness for selected keys only"""
-        if not self.selected_keys:
-            QMessageBox.information(self, "No Selection", "Please select keys first (enable selection mode and click on keys)")
-            return
-            
-        value = self.selection_intensity_slider.value()
-        self.selection_intensity_label.setText(f"{value}%")
         
-        intensity = value / 100.0
+        # Get intensity from slider (0-100)
+        intensity = self.region_intensity_slider.value() / 100.0
         
-        # Apply to just the selected keys
         for key in self.selected_keys:
-            original_color = key.color
+            # Create a color with the current color's RGB values adjusted by intensity
             adjusted_color = QColor(
-                int(original_color.red() * intensity),
-                int(original_color.green() * intensity),
-                int(original_color.blue() * intensity)
+                int(self.current_color.red() * intensity),
+                int(self.current_color.green() * intensity),
+                int(self.current_color.blue() * intensity)
             )
             key.setKeyColor(adjusted_color)
         
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
+    
+    def region_intensity_changed(self):
+        """Handle changes to the region-specific intensity slider"""
+        value = self.region_intensity_slider.value()
+        self.region_intensity_label.setText(f"{value}%")
+        
+        # Apply the intensity to selected keys
+        if not self.selected_keys:
+            return
+        
+        # Re-apply the current colors with the new intensity
+        self.set_region_color()
     
     def set_current_color(self, color):
         """Set the current working color"""
@@ -578,3 +703,281 @@ class KeyboardConfigApp(QMainWindow):
         
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
+    
+    def start_shortcut_monitor(self):
+        """Start monitoring keyboard for shortcuts"""
+        if self.shortcut_monitor_active:
+            return
+            
+        self.shortcut_monitor_active = True
+        self.statusBar().showMessage("Shortcut monitoring activated")
+    
+    def stop_shortcut_monitor(self):
+        """Stop monitoring keyboard for shortcuts"""
+        self.shortcut_monitor_active = False
+        self.statusBar().showMessage("Shortcut monitoring deactivated")
+        
+        # Restore any highlighted keys to their original colors
+        self.restore_highlighted_keys()
+    
+    def update_key_highlights(self):
+        """Update key highlighting based on currently pressed keys"""
+        if not self.currently_pressed_keys:
+            return
+            
+        # Convert set to list for the shortcut manager
+        pressed_list = list(self.currently_pressed_keys)
+        
+        # Get keys to highlight from shortcut manager
+        keys_to_highlight = self.shortcut_manager.get_keys_to_highlight(pressed_list)
+        
+        # Restore previously highlighted keys
+        self.restore_highlighted_keys()
+        
+        # Highlight new keys
+        self.highlighted_keys = []
+        for key in self.keys:
+            # Check if key name matches (case-insensitive)
+            if key.key_name.lower() in [k.lower() for k in keys_to_highlight]:
+                # Save original color before highlighting
+                self.original_key_colors[key] = QColor(key.color)
+                
+                # Apply highlight color
+                key.setKeyColor(self.highlight_color)
+                self.highlighted_keys.append(key)
+        
+        # Update UI immediately
+        QApplication.processEvents()
+        
+        # If auto-reload is on, send the updated colors to the keyboard
+        if self.auto_reload and self.keyboard.connected:
+            self.send_config()
+    
+    def restore_highlighted_keys(self):
+        """Restore original colors to highlighted keys"""
+        for key in self.highlighted_keys:
+            if key in self.original_key_colors:
+                key.setKeyColor(self.original_key_colors[key])
+        
+        self.highlighted_keys = []
+        self.original_key_colors = {}
+        
+        # Update UI immediately
+        QApplication.processEvents()
+        
+        # If auto-reload is on, send the updated colors to the keyboard
+        if self.auto_reload and self.keyboard.connected:
+            self.send_config()
+
+    def toggle_shortcut_monitor(self):
+        """Toggle shortcut monitoring on/off"""
+        if self.shortcut_toggle.isChecked():
+            self.shortcut_toggle.setText("Stop Shortcut Monitor")
+            self.start_shortcut_monitor()
+        else:
+            self.shortcut_toggle.setText("Start Shortcut Monitor")
+            self.stop_shortcut_monitor()
+
+    def choose_highlight_color(self):
+        """Choose a custom color for highlighting shortcuts"""
+        color = QColorDialog.getColor(self.highlight_color, self, "Select Highlight Color")
+        if color.isValid():
+            self.highlight_color = color
+            self.highlight_color_display.setColor(color)
+
+    def manage_shortcuts(self):
+        """Open a dialog to manage keyboard shortcuts"""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manage Keyboard Shortcuts")
+        dialog.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Create table to display shortcuts
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Shortcut Name", "Keys"])
+        
+        # Add shortcuts to table
+        shortcuts = self.shortcut_manager.active_shortcuts
+        table.setRowCount(len(shortcuts))
+        
+        for i, (name, keys) in enumerate(shortcuts.items()):
+            name_item = QTableWidgetItem(name)
+            keys_item = QTableWidgetItem("+".join(keys))
+            
+            table.setItem(i, 0, name_item)
+            table.setItem(i, 1, keys_item)
+        
+        table.resizeColumnsToContents()
+        layout.addWidget(table)
+        
+        # Add buttons for add/remove/edit
+        button_layout = QHBoxLayout()
+        
+        add_btn = QPushButton("Add New")
+        add_btn.clicked.connect(lambda: self.add_edit_shortcut(table))
+        button_layout.addWidget(add_btn)
+        
+        edit_btn = QPushButton("Edit Selected")
+        edit_btn.clicked.connect(lambda: self.add_edit_shortcut(table, edit=True))
+        button_layout.addWidget(edit_btn)
+        
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(lambda: self.remove_shortcut(table))
+        button_layout.addWidget(remove_btn)
+        
+        restore_defaults_btn = QPushButton("Restore Defaults")
+        restore_defaults_btn.clicked.connect(lambda: self.restore_default_shortcuts(table))
+        button_layout.addWidget(restore_defaults_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        dialog.exec_()
+
+    def add_edit_shortcut(self, table, edit=False):
+        """Add a new shortcut or edit existing one"""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Shortcut" if not edit else "Edit Shortcut")
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Name field
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Shortcut Name:"))
+        name_input = QLineEdit()
+        name_layout.addWidget(name_input)
+        layout.addLayout(name_layout)
+        
+        # Keys field
+        keys_layout = QHBoxLayout()
+        keys_layout.addWidget(QLabel("Keys (separated by +):"))
+        keys_input = QLineEdit()
+        keys_layout.addWidget(keys_input)
+        layout.addLayout(keys_layout)
+        
+        # Help text
+        layout.addWidget(QLabel("Example: Ctrl+C or Ctrl+Shift+V"))
+        
+        # If editing, populate fields with selected shortcut
+        if edit:
+            selected_row = table.currentRow()
+            if selected_row >= 0:
+                name = table.item(selected_row, 0).text()
+                keys = table.item(selected_row, 1).text()
+                
+                name_input.setText(name)
+                keys_input.setText(keys)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("Save")
+        cancel_btn = QPushButton("Cancel")
+        
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Connect buttons
+        cancel_btn.clicked.connect(dialog.reject)
+        save_btn.clicked.connect(lambda: self.save_shortcut(
+            name_input.text(), 
+            keys_input.text(), 
+            table,
+            dialog
+        ))
+        
+        dialog.exec_()
+
+    def save_shortcut(self, name, keys_text, table, dialog):
+        """Save the shortcut to the manager and update table"""
+        if not name or not keys_text:
+            QMessageBox.warning(self, "Error", "Name and keys cannot be empty.")
+            return
+        
+        # Split the keys text into individual keys
+        key_list = [k.strip() for k in keys_text.split("+")]
+        
+        # Save to manager
+        self.shortcut_manager.add_shortcut(name, key_list)
+        
+        # Refresh table
+        shortcuts = self.shortcut_manager.active_shortcuts
+        table.setRowCount(len(shortcuts))
+        
+        for i, (s_name, s_keys) in enumerate(shortcuts.items()):
+            name_item = QTableWidgetItem(s_name)
+            keys_item = QTableWidgetItem("+".join(s_keys))
+            
+            table.setItem(i, 0, name_item)
+            table.setItem(i, 1, keys_item)
+        
+        # Close dialog
+        dialog.accept()
+
+    def remove_shortcut(self, table):
+        """Remove the selected shortcut"""
+        selected_row = table.currentRow()
+        if selected_row >= 0:
+            name = table.item(selected_row, 0).text()
+            
+            # Confirm deletion
+            confirm = QMessageBox.question(
+                self, "Confirm Deletion", 
+                f"Are you sure you want to delete the shortcut '{name}'?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if confirm == QMessageBox.Yes:
+                # Remove from manager
+                self.shortcut_manager.remove_shortcut(name)
+                
+                # Remove from table
+                table.removeRow(selected_row)
+
+    def restore_default_shortcuts(self, table):
+        """Restore default shortcuts"""
+        confirm = QMessageBox.question(
+            self, "Confirm Reset", 
+            "Are you sure you want to restore default shortcuts? This will overwrite any custom shortcuts.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            # Reset shortcuts in manager
+            self.shortcut_manager.active_shortcuts = self.shortcut_manager.default_shortcuts.copy()
+            self.shortcut_manager.save_shortcuts()
+            
+            # Refresh table
+            shortcuts = self.shortcut_manager.active_shortcuts
+            table.setRowCount(len(shortcuts))
+            
+            for i, (name, keys) in enumerate(shortcuts.items()):
+                name_item = QTableWidgetItem(name)
+                keys_item = QTableWidgetItem("+".join(keys))
+                
+                table.setItem(i, 0, name_item)
+                table.setItem(i, 1, keys_item)
+
+    def closeEvent(self, event):
+        """Clean up resources when closing the application"""
+        # Stop shortcut monitor if active
+        if self.shortcut_monitor_active:
+            self.stop_shortcut_monitor()
+        
+        # Disconnect from keyboard if connected
+        if self.keyboard.connected:
+            self.keyboard.disconnect()
+        
+        event.accept() 
