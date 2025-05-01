@@ -21,10 +21,22 @@ logging.getLogger('').addHandler(console)
 
 logger = logging.getLogger(__name__)
 
+def main():
+    """Main application entry point"""
+    # Create the Qt Application
+    app = QApplication(sys.argv)
+    
+    # Set application style
+    app.setStyle('Fusion')
+    
+    # Create and show the keyboard config application
+    keyboard_app = KeyboardConfigApp()
+    keyboard_app.show()
+    
+    # Start the application event loop
+    sys.exit(app.exec_())
+
 if __name__ == "__main__":
     logger.info("Starting Keyboard LED Configuration Application")
-    app = QApplication(sys.argv)
-    window = KeyboardConfigApp()
-    window.show()
-    logger.info("Application GUI initialized and shown")
-    sys.exit(app.exec_()) 
+    main()
+    logger.info("Application GUI initialized and shown") 
