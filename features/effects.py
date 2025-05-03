@@ -20,15 +20,14 @@ class EffectsFeature:
         self.app = keyboard_app
         self.keys = keyboard_app.keys
         self.keyboard = keyboard_app.keyboard
+        # Allow the app or user to override which keys are "function keys"
+        self.function_keys = ["F1","F2","F3","F4","F5","F6",
+                              "F7","F8","F9","F10","F11","F12"]
     
     def set_function_key_colors(self, color):
         """Set all function keys to a specific color"""
-        # Function key labels
-        function_keys = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
-        
-        # Find the function keys by label and set their color
         for key in self.keys:
-            if key.key_name in function_keys:
+            if key.key_name in self.function_keys:
                 if isinstance(color, tuple):
                     key.setKeyColor(QColor(*color))
                 else:
@@ -62,8 +61,9 @@ class EffectsFeature:
             direction: "horizontal" or "vertical"
             speed: Wave speed (lower is faster)
         """
-        import time
-        import math
+        import time, math
+        # How many complete waves to show:
+        cycles = getattr(self, "wave_cycles", 1)
         
         # Get the keyboard layout map to determine positions
         layout_map = {}
@@ -80,7 +80,6 @@ class EffectsFeature:
         
         # Animation parameters
         frames = 20
-        cycles = 2  # How many complete waves to display
         
         try:
             for frame in range(frames):

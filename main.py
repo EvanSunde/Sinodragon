@@ -1,10 +1,12 @@
 #! /usr/bin/python3
 import sys
 import logging
-from PyQt5.QtWidgets import QApplication
-from keyboard_layout import KeyboardConfigApp
-from features.cli import CommandLineInterface
 import argparse
+from PyQt5.QtWidgets import QApplication
+
+# Import the main app class from ui package
+from ui.keyboard_app import KeyboardConfigApp
+from features.cli import CommandLineInterface
 
 # Configure logging with INFO level instead of DEBUG
 logging.basicConfig(
