@@ -1,7 +1,10 @@
+#! /usr/bin/python3
 import sys
 import logging
 from PyQt5.QtWidgets import QApplication
 from keyboard_layout import KeyboardConfigApp
+from features.cli import CommandLineInterface
+import argparse
 
 # Configure logging with INFO level instead of DEBUG
 logging.basicConfig(
@@ -23,18 +26,39 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Main application entry point"""
-    # Create the Qt Application
-    app = QApplication(sys.argv)
+    # Parse specific arguments for the main app
+    parser = argparse.ArgumentParser(description="Keyboard LED Configuration")
+    parser.add_argument('--background', '-b', action='store_true', help='Start application in background mode')
+    parser.add_argument('--no-connect', action='store_true', help='Do not automatically connect to keyboard on startup')
     
-    # Set application style
-    app.setStyle('Fusion')
+    # Only parse known args to allow CLI module to handle its own args
+    args, _ = parser.parse_known_args()
     
-    # Create and show the keyboard config application
-    keyboard_app = KeyboardConfigApp()
-    keyboard_app.show()
+    # Handle command line interface
+    result = CommandLineInterface.handle_command_line(KeyboardConfigApp)
     
-    # Start the application event loop
-    sys.exit(app.exec_())
+    # If command line handling requested GUI launch (returns None), launch the GUI
+    if result is None:
+        # Normal GUI mode
+        app = QApplication(sys.argv)
+        app.setStyle('Fusion')
+        
+        # Create the keyboard app
+        keyboard_app = KeyboardConfigApp()
+        
+        # Set auto-connect preference
+        if args.no_connect:
+            keyboard_app.auto_connect = False
+        
+        # Show window unless background mode is requested
+        if not args.background:
+            keyboard_app.show()
+        
+        sys.exit(app.exec_())
+    
+    # Add explicit exit for CLI operations
+    else:
+        sys.exit(0)  # Exit after CLI operations complete
 
 if __name__ == "__main__":
     logger.info("Starting Keyboard LED Configuration Application")

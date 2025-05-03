@@ -12,11 +12,36 @@ logger = logging.getLogger(__name__)
 
 class ConfigManager:
     def __init__(self):
-        self.config_file = "keyboard_config.json"
+        # Define possible config paths
+        home_dir = os.path.expanduser("~")
+        self.global_config_dir = os.path.join(home_dir, ".config", "sinodragon")
+        self.local_config_dir = "./config"
+        
+        # Ensure config directory exists
+        self._ensure_config_dir()
+        
+        self.config_file = os.path.join(self.config_dir, "keyboard_config.json")
         self.current_config = None
         self.default_config = self._create_default_config()
         logger.debug(f"ConfigManager initialized with config file: {self.config_file}")
         
+    def _ensure_config_dir(self):
+        """Ensure that configuration directory exists"""
+        # Try global config directory first
+        try:
+            os.makedirs(self.global_config_dir, exist_ok=True)
+            self.config_dir = self.global_config_dir
+            logger.info(f"Using global config directory: {self.global_config_dir}")
+        except (PermissionError, OSError):
+            # Fall back to local config if global fails
+            try:
+                os.makedirs(self.local_config_dir, exist_ok=True)
+                self.config_dir = self.local_config_dir
+                logger.info(f"Using local config directory: {self.local_config_dir}")
+            except (PermissionError, OSError) as e:
+                logger.error(f"Failed to create config directories: {e}")
+                self.config_dir = "."  # Fallback to current directory
+                
     def _create_default_config(self):
         """Create a default configuration with all keys set to green"""
         # Total keys based on keyboard layout

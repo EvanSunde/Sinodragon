@@ -2,17 +2,23 @@ import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QPushButton, 
                            QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
                            QComboBox, QColorDialog, QLineEdit, QMessageBox, QSlider,
-                           QGroupBox, QCheckBox, QFrame, QSplitter)
+                           QGroupBox, QCheckBox, QFrame, QSplitter, QSpinBox,
+                           QSystemTrayIcon, QMenu, QAction)
 from PyQt5.QtGui import QColor, QPalette, QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QEvent
 import time
 import colorsys
 import threading
+from pynput import keyboard as pynput_keyboard
+import os
 
 from keyboard_controller import KeyboardController
 from config_manager import ConfigManager
 from shortcut_manager import ShortcutManager
 from shortcut_lighting import ShortcutLighting
+from features.text_display import TextDisplayFeature
+from features.effects import EffectsFeature
+from features.system_monitor import SystemMonitorFeature
 
 # Define a key mapping between Qt key constants and our keyboard layout key names
 QT_KEY_MAP = {
@@ -76,6 +82,15 @@ QT_KEY_MAP = {
     Qt.Key_Equal: "=",
     Qt.Key_QuoteLeft: "`"
 }
+
+class CustomKeyEvent(QEvent):
+    """Custom event for key presses from alternative input sources"""
+    KeyPress = QEvent.Type(QEvent.registerEventType())
+    KeyRelease = QEvent.Type(QEvent.registerEventType()) 
+    
+    def __init__(self, event_type, key_name):
+        super().__init__(event_type)
+        self.key_name = key_name
 
 class KeyButton(QPushButton):
     def __init__(self, key_name, index, parent=None):
@@ -151,6 +166,9 @@ class KeyboardConfigApp(QMainWindow):
         self.current_color = QColor(0, 255, 0)  # Default working color is green
         self.selection_mode = False
         
+        # Add auto-connect option, default to true
+        self.auto_connect = True
+        
         # Setup auto-reload before calling load_config
         self.auto_reload = True
         self.reload_timer = QTimer()
@@ -164,14 +182,33 @@ class KeyboardConfigApp(QMainWindow):
         # Create the shortcut lighting manager BEFORE setting up the UI
         self.shortcut_lighting = ShortcutLighting(self)
         
+        # Add a timer for debouncing slider changes
+        self.intensity_timer = QTimer()
+        self.intensity_timer.setSingleShot(True)
+        self.intensity_timer.timeout.connect(self.apply_intensity)
+        
         # Setup UI after shortcut_lighting is created
         self.setupUI()
+        
+        # Setup system tray
+        self.setupSystemTray()
         
         # Load default configuration
         self.load_config()
         
+        # Auto-connect to keyboard if enabled
+        if self.auto_connect:
+            QTimer.singleShot(500, self.connect_to_keyboard)
+        
         # Install event filter to catch key events
         QApplication.instance().installEventFilter(self)
+        
+        # Create text display feature
+        self.text_display = TextDisplayFeature(self)
+        self.effects = EffectsFeature(self)
+        
+        # Add system monitoring feature
+        self.system_monitor = SystemMonitorFeature(self)
     
     def eventFilter(self, obj, event):
         """Filter keyboard events for shortcut highlighting"""
@@ -417,12 +454,16 @@ class KeyboardConfigApp(QMainWindow):
         function_keys_btn = QPushButton("Highlight Function Keys")
         function_keys_btn.clicked.connect(lambda: self.set_function_key_colors((255, 128, 0)))
         presets_layout.addWidget(function_keys_btn)
-        
-        # Rainbow preset
-        rainbow_btn = QPushButton("Rainbow Effect")
-        rainbow_btn.clicked.connect(self.set_rainbow_colors)
-        presets_layout.addWidget(rainbow_btn)
-        
+
+        # Add a few more useful presets
+        gaming_preset_btn = QPushButton("Gaming Preset (WASD)")
+        gaming_preset_btn.clicked.connect(self.apply_gaming_preset)
+        presets_layout.addWidget(gaming_preset_btn)
+
+        typing_preset_btn = QPushButton("Typing Preset")
+        typing_preset_btn.clicked.connect(self.apply_typing_preset)
+        presets_layout.addWidget(typing_preset_btn)
+
         presets_group.setLayout(presets_layout)
         controls_panel.addWidget(presets_group)
         
@@ -448,6 +489,11 @@ class KeyboardConfigApp(QMainWindow):
         modifier_color_btn.clicked.connect(self.manage_modifier_colors)
         shortcut_layout.addWidget(modifier_color_btn)
         
+        # In the shortcut_group section, add a checkbox for global monitoring
+        self.global_shortcut_checkbox = QCheckBox("Global Monitoring (System-wide)")
+        self.global_shortcut_checkbox.setToolTip("Monitor keyboard shortcuts even when application is not in focus")
+        shortcut_layout.addWidget(self.global_shortcut_checkbox)
+        
         # Default config selection for when shortcut keys are released
         default_config_layout = QHBoxLayout()
         default_config_layout.addWidget(QLabel("Default Config:"))
@@ -468,6 +514,127 @@ class KeyboardConfigApp(QMainWindow):
         # Add shortcut group to layout
         shortcut_group.setLayout(shortcut_layout)
         controls_panel.addWidget(shortcut_group)
+        
+        # System monitoring group
+        system_monitor_group = QGroupBox("System Monitoring")
+        system_monitor_layout = QVBoxLayout()
+
+        # Add monitoring selection dropdown
+        system_monitor_layout.addWidget(QLabel("Select Monitoring:"))
+        self.monitor_combo = QComboBox()
+        self.monitor_combo.addItems([
+            "CPU Usage", 
+            "RAM Usage",
+            "Battery Status",
+            "All Metrics"
+        ])
+        system_monitor_layout.addWidget(self.monitor_combo)
+
+        # Add update interval slider
+        update_interval_layout = QHBoxLayout()
+        update_interval_layout.addWidget(QLabel("Update Interval:"))
+        self.update_interval_slider = QSlider(Qt.Horizontal)
+        self.update_interval_slider.setMinimum(1)
+        self.update_interval_slider.setMaximum(10)
+        self.update_interval_slider.setValue(2)
+        self.update_interval_slider.setTickPosition(QSlider.TicksBelow)
+        self.update_interval_slider.setTickInterval(1)
+        update_interval_layout.addWidget(self.update_interval_slider)
+        self.update_interval_label = QLabel("2s")
+        self.update_interval_slider.valueChanged.connect(
+            lambda v: self.update_interval_label.setText(f"{v}s")
+        )
+        update_interval_layout.addWidget(self.update_interval_label)
+        system_monitor_layout.addLayout(update_interval_layout)
+
+        # Start/stop monitoring buttons
+        monitor_buttons_layout = QHBoxLayout()
+
+        self.start_monitor_btn = QPushButton("Start Monitoring")
+        self.start_monitor_btn.clicked.connect(self.start_system_monitoring)
+        monitor_buttons_layout.addWidget(self.start_monitor_btn)
+
+        self.stop_monitor_btn = QPushButton("Stop Monitoring")
+        self.stop_monitor_btn.clicked.connect(self.stop_system_monitoring)
+        monitor_buttons_layout.addWidget(self.stop_monitor_btn)
+
+        system_monitor_layout.addLayout(monitor_buttons_layout)
+
+        # Add the group to controls panel
+        system_monitor_group.setLayout(system_monitor_layout)
+        controls_panel.addWidget(system_monitor_group)
+        
+        # Create a group for effects
+        effects_group = QGroupBox("Effects")
+        effects_layout = QVBoxLayout()
+        
+        # Add effect selection dropdown
+        effects_layout.addWidget(QLabel("Select Effect:"))
+        self.effect_combo = QComboBox()
+        self.effect_combo.addItems([
+            "Rainbow Colors", 
+            "Wave Effect",
+            "Breathing Effect", 
+            "Spectrum Cycle",
+            "Starlight",
+            "Ripple Effect",
+            "Reactive Typing",
+            "Gradient Flow"
+        ])
+        self.effect_combo.currentIndexChanged.connect(self.update_effect_options)
+        effects_layout.addWidget(self.effect_combo)
+
+        # Add effect options container (will be populated based on selection)
+        self.effect_options_container = QWidget()
+        self.effect_options_layout = QVBoxLayout(self.effect_options_container)
+        effects_layout.addWidget(self.effect_options_container)
+
+        # Add color selection for effects that need it
+        self.effect_color_layout = QHBoxLayout()
+        self.effect_color_layout.addWidget(QLabel("Effect Color:"))
+        self.effect_color_display = ColorDisplay(QColor(0, 150, 255))  # Default cyan-blue
+        self.effect_color_display.clicked.connect(self.choose_effect_color)
+        self.effect_color_layout.addWidget(self.effect_color_display)
+        self.effect_options_layout.addLayout(self.effect_color_layout)
+
+        # Add speed control
+        self.effect_speed_layout = QHBoxLayout()
+        self.effect_speed_layout.addWidget(QLabel("Speed:"))
+        self.effect_speed_slider = QSlider(Qt.Horizontal)
+        self.effect_speed_slider.setMinimum(1)
+        self.effect_speed_slider.setMaximum(20)
+        self.effect_speed_slider.setValue(10)
+        self.effect_speed_slider.setTickPosition(QSlider.TicksBelow)
+        self.effect_speed_slider.setTickInterval(1)
+        self.effect_speed_layout.addWidget(self.effect_speed_slider)
+        self.effect_options_layout.addLayout(self.effect_speed_layout)
+
+        # Duration control for applicable effects
+        self.effect_duration_layout = QHBoxLayout()
+        self.effect_duration_layout.addWidget(QLabel("Duration (sec):"))
+        self.effect_duration_spin = QSpinBox()
+        self.effect_duration_spin.setMinimum(1)
+        self.effect_duration_spin.setMaximum(60)
+        self.effect_duration_spin.setValue(10)
+        self.effect_duration_layout.addWidget(self.effect_duration_spin)
+        self.effect_options_layout.addLayout(self.effect_duration_layout)
+
+        # Effect control buttons
+        effect_control_layout = QHBoxLayout()
+        self.run_effect_btn = QPushButton("Run Effect")
+        self.run_effect_btn.clicked.connect(self.run_selected_effect)
+        effect_control_layout.addWidget(self.run_effect_btn)
+
+        self.stop_effect_btn = QPushButton("Stop Effect")
+        self.stop_effect_btn.clicked.connect(self.stop_effects)
+        effect_control_layout.addWidget(self.stop_effect_btn)
+        effects_layout.addLayout(effect_control_layout)
+
+        effects_group.setLayout(effects_layout)
+        controls_panel.addWidget(effects_group)
+        
+        # Initial update to show/hide relevant controls
+        self.update_effect_options()
         
         # Add stretch to push controls to the top
         controls_panel.addStretch()
@@ -543,17 +710,35 @@ class KeyboardConfigApp(QMainWindow):
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
     
-    def region_intensity_changed(self):
-        """Handle changes to the region-specific intensity slider"""
-        value = self.region_intensity_slider.value()
+    def region_intensity_changed(self, value):
+        """Handle change in region intensity slider"""
         self.region_intensity_label.setText(f"{value}%")
         
-        # Apply the intensity to selected keys
-        if not self.selected_keys:
-            return
-        
-        # Re-apply the current colors with the new intensity
-        self.set_region_color()
+        # Apply intensity to selected keys
+        if self.selected_keys:
+            # Calculate intensity factor
+            intensity = value / 100.0
+            
+            # For each selected key, adjust brightness
+            for key in self.selected_keys:
+                original_color = key.color
+                # Preserve hue and saturation but adjust value (brightness)
+                h, s, v = self.rgb_to_hsv(original_color.red(), original_color.green(), original_color.blue())
+                new_color = self.hsv_to_rgb(h, s, v * intensity)
+                key.setKeyColor(QColor(*new_color))
+            
+            # Restart the timer - this will delay sending the config until the user stops changing values
+            self.intensity_timer.start(200)  # 200ms delay
+
+    def rgb_to_hsv(self, r, g, b):
+        """Convert RGB to HSV color values"""
+        r, g, b = r/255.0, g/255.0, b/255.0
+        return colorsys.rgb_to_hsv(r, g, b)
+
+    def hsv_to_rgb(self, h, s, v):
+        """Convert HSV to RGB color values"""
+        r, g, b = colorsys.hsv_to_rgb(h, s, v)
+        return int(r*255), int(g*255), int(b*255)
     
     def set_current_color(self, color):
         """Set the current working color"""
@@ -578,10 +763,9 @@ class KeyboardConfigApp(QMainWindow):
     
     def toggle_connection(self):
         if not self.keyboard.connected:
-            if self.keyboard.connect():
+            if self.connect_to_keyboard():
                 self.connect_button.setText("Disconnect")
                 self.statusBar().showMessage("Connected to keyboard")
-                self.send_config()  # Apply config immediately on connect
             else:
                 QMessageBox.warning(self, "Connection Failed", 
                                    "Could not connect to the keyboard. Make sure it's plugged in and has the correct VID/PID.")
@@ -604,7 +788,11 @@ class KeyboardConfigApp(QMainWindow):
         value = self.intensity_slider.value()
         self.intensity_label.setText(f"{value}%")
         
-        # Apply the new intensity if auto-reload is enabled
+        # Restart the timer - this will delay sending the config until the user stops changing values
+        self.intensity_timer.start(200)  # 200ms delay
+
+    def apply_intensity(self):
+        """Apply the intensity change after slider movement has stopped"""
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
     
@@ -723,30 +911,12 @@ class KeyboardConfigApp(QMainWindow):
             QMessageBox.warning(self, "Error", f"Failed to get device information: {str(e)}")
 
     def set_function_key_colors(self, color):
-        """Set all function keys to a specific color"""
-        # Function key labels
-        function_keys = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
-        
-        # Find the function keys by label and set their color
-        for key in self.keys:
-            if key.key_name in function_keys:
-                key.setKeyColor(QColor(*color))
-        
-        if self.auto_reload and self.keyboard.connected:
-            self.send_config()
-    
+        """Delegate to effects module"""
+        return self.effects.set_function_key_colors(color)
+
     def set_rainbow_colors(self):
-        """Create a rainbow effect across all keys"""
-        # Create a rainbow gradient
-        num_keys = len(self.keys)
-        for i, key in enumerate(self.keys):
-            # Create a color based on position in keyboard
-            hue = i / num_keys
-            r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-            key.setKeyColor(QColor(int(r * 255), int(g * 255), int(b * 255)))
-        
-        if self.auto_reload and self.keyboard.connected:
-            self.send_config()
+        """Delegate to effects module"""
+        return self.effects.set_rainbow_colors()
     
     def start_shortcut_monitor(self):
         """Start monitoring keyboard for shortcuts"""
@@ -760,11 +930,22 @@ class KeyboardConfigApp(QMainWindow):
         """Toggle shortcut monitoring on/off"""
         if self.shortcut_toggle.isChecked():
             self.shortcut_toggle.setText("Stop Shortcut Monitor")
-            self.start_shortcut_monitor()
+            self.shortcut_lighting.start_monitor()
+            
+            # If global monitoring is enabled, start the global listener
+            if self.global_shortcut_checkbox.isChecked():
+                self.start_global_shortcut_monitor()
+            
+            self.statusBar().showMessage("Shortcut monitoring started")
         else:
             self.shortcut_toggle.setText("Start Shortcut Monitor")
-            self.stop_shortcut_monitor()
-    
+            self.shortcut_lighting.stop_monitor()
+            
+            # Stop global listener if active
+            self.stop_global_shortcut_monitor()
+            
+            self.statusBar().showMessage("Shortcut monitoring stopped")
+
     def choose_highlight_color(self):
         """Choose a custom color for highlighting shortcuts"""
         color = QColorDialog.getColor(self.shortcut_lighting.default_highlight_color, self, "Select Highlight Color")
@@ -967,16 +1148,35 @@ class KeyboardConfigApp(QMainWindow):
                 table.setItem(i, 1, keys_item)
 
     def closeEvent(self, event):
-        """Clean up resources when closing the application"""
-        # Stop shortcut monitor if active
-        if self.shortcut_lighting.monitor_active:
-            self.stop_shortcut_monitor()
+        """Handle application close event"""
+        # Check if should minimize to tray instead
+        minimize_to_tray = True  # Could be a setting
         
-        # Disconnect from keyboard if connected
-        if self.keyboard.connected:
-            self.keyboard.disconnect()
-        
-        event.accept()
+        if minimize_to_tray and self.tray_icon.isVisible():
+            # Hide the window instead of closing
+            event.ignore()
+            self.hide()
+            
+            # Show notification
+            self.tray_icon.showMessage(
+                "Running in Background",
+                "The keyboard application is still running in the system tray.",
+                QSystemTrayIcon.Information,
+                2000
+            )
+        else:
+            # Stop any active listeners
+            self.stop_global_shortcut_monitor()
+            
+            # Stop shortcut monitoring
+            self.shortcut_lighting.stop_monitor()
+            
+            # Disconnect from keyboard
+            if self.keyboard.connected:
+                self.keyboard.disconnect()
+            
+            # Accept the close event
+            event.accept()
 
     def save_keyboard_layout(self):
         """Save the keyboard layout to the configuration file"""
@@ -1053,4 +1253,544 @@ class KeyboardConfigApp(QMainWindow):
 
     def set_default_shortcut_config(self, config_name):
         """Set the configuration to be loaded when shortcut keys are released"""
-        self.shortcut_lighting.set_default_config(config_name) 
+        self.shortcut_lighting.set_default_config(config_name)
+
+    def clear_keyboard(self):
+        """Delegate to text_display module"""
+        return self.text_display.clear_keyboard()
+
+    def display_text(self, text, color=None, clear_first=True):
+        """Delegate to text_display module"""
+        return self.text_display.display_text(text, color, clear_first)
+
+    def display_advanced_text(self, text, color=None, start_pos=None, clear_first=True):
+        """Delegate to text_display module"""
+        return self.text_display.display_advanced_text(text, color, start_pos, clear_first)
+
+    def scroll_text(self, text, speed=0.5, color=None):
+        """Delegate to text_display module"""
+        return self.text_display.scroll_text(text, speed, color)
+
+    def run_selected_effect(self):
+        """Run the effect selected in the dropdown"""
+        effect_name = self.effect_combo.currentText()
+        speed = self.get_effect_speed()
+        color = self.effect_color_display.color
+        color_tuple = (color.red(), color.green(), color.blue())
+        duration = self.effect_duration_spin.value()
+        
+        # Show status message
+        self.statusBar().showMessage(f"Running {effect_name}...")
+        
+        # Run the appropriate effect
+        if effect_name == "Rainbow Colors":
+            self.run_effect_in_thread(self.effects.set_rainbow_colors)
+        
+        elif effect_name == "Wave Effect":
+            self.run_effect_in_thread(self.effects.set_wave_effect, speed=speed)
+        
+        elif effect_name == "Breathing Effect":
+            self.run_effect_in_thread(self.effects.breathe_effect, color=color_tuple, speed=speed, cycles=duration)
+        
+        elif effect_name == "Spectrum Cycle":
+            self.run_effect_in_thread(self.effects.spectrum_effect, speed=speed, cycles=duration)
+        
+        elif effect_name == "Starlight":
+            self.run_effect_in_thread(self.effects.starlight_effect, star_color=color_tuple, duration=duration)
+        
+        elif effect_name == "Ripple Effect":
+            self.run_effect_in_thread(self.effects.ripple_effect, color=color_tuple, speed=speed)
+        
+        elif effect_name == "Reactive Typing":
+            self.run_effect_in_thread(self.effects.reactive_effect, highlight_color=color_tuple, duration=duration)
+        
+        elif effect_name == "Gradient Flow":
+            self.run_effect_in_thread(self.effects.gradient_effect, speed=speed, cycles=duration)
+
+    def stop_effects(self):
+        """Stop any running effects by setting a flag"""
+        # A simple approach - load the current configuration to overwrite any effect
+        self.statusBar().showMessage("Stopping effects...")
+        
+        # Need to interrupt any running effect threads
+        # This is a challenge since we're using multiple threads
+        # A simple approach is to just reload the current config
+        self.load_config()
+        self.send_config()
+        
+        self.statusBar().showMessage("Effects stopped, configuration reloaded")
+
+    def run_effect_in_thread(self, effect_func, **kwargs):
+        """Run an effect function in a separate thread"""
+        threading.Thread(target=effect_func, kwargs=kwargs, daemon=True).start()
+
+    def get_effect_speed(self):
+        """Convert slider value to appropriate speed value (inverted)"""
+        slider_value = self.effect_speed_slider.value()
+        # Convert from 1-20 range to 0.01-0.2 range (inverted - higher is slower)
+        return 0.21 - (slider_value / 100.0)
+
+    def update_effect_options(self):
+        """Update the options shown based on selected effect"""
+        effect_name = self.effect_combo.currentText()
+        
+        # Default - show all options
+        self.effect_color_layout.parentWidget().setVisible(True)
+        self.effect_speed_layout.parentWidget().setVisible(True)
+        self.effect_duration_layout.parentWidget().setVisible(True)
+        
+        # Hide/show options based on effect
+        if effect_name == "Rainbow Colors":
+            # Rainbow doesn't need color or duration
+            self.effect_color_layout.parentWidget().setVisible(False) 
+            self.effect_duration_layout.parentWidget().setVisible(False)
+        
+        elif effect_name == "Spectrum Cycle":
+            # Spectrum doesn't need color or duration
+            self.effect_color_layout.parentWidget().setVisible(False)
+        
+        elif effect_name == "Wave Effect":
+            # Wave doesn't need duration
+            self.effect_duration_layout.parentWidget().setVisible(False)
+        
+        elif effect_name == "Gradient Flow":
+            # Gradient doesn't need duration
+            self.effect_duration_layout.parentWidget().setVisible(False)
+        
+        # Update button text
+        self.run_effect_btn.setText(f"Run {effect_name}")
+        
+        # Update status bar with hint
+        self.statusBar().showMessage(f"Ready to run {effect_name}")
+
+    def choose_effect_color(self):
+        """Open a color dialog to choose the effect color"""
+        color = QColorDialog.getColor(self.effect_color_display.color, self, "Choose Effect Color")
+        if color.isValid():
+            self.effect_color_display.setColor(color)
+
+    def run_rainbow_effect(self):
+        """Run the rainbow effect in a thread"""
+        self.run_effect_in_thread(self.effects.set_rainbow_colors)
+
+    def run_wave_effect(self):
+        """Run the wave effect in a thread"""
+        self.run_effect_in_thread(self.effects.set_wave_effect, speed=0.1)
+
+    def run_breathe_effect(self):
+        """Run the breathing effect in a thread"""
+        self.run_effect_in_thread(self.effects.breathe_effect, cycles=3)
+
+    def run_spectrum_effect(self):
+        """Run the spectrum effect in a thread"""
+        self.run_effect_in_thread(self.effects.spectrum_effect, speed=0.1)
+
+    def run_starlight_effect(self):
+        """Run the starlight effect in a thread"""
+        self.run_effect_in_thread(self.effects.starlight_effect, duration=10)
+
+    def apply_gaming_preset(self):
+        """Apply a preset for gaming with WASD keys highlighted"""
+        # Clear keyboard first
+        self.clear_keyboard()
+        
+        # Highlight WASD keys in blue
+        gaming_keys = ["W", "A", "S", "D", "Space", "Shift", "Ctrl"]
+        for key in self.keys:
+            if key.key_name in gaming_keys:
+                key.setKeyColor(QColor(0, 150, 255))  # Blue
+        
+        # Highlight function keys in orange
+        function_keys = ["F1", "F2", "F3", "F4", "F5", "F6"]
+        for key in self.keys:
+            if key.key_name in function_keys:
+                key.setKeyColor(QColor(255, 128, 0))  # Orange
+        
+        self.send_config()
+        self.statusBar().showMessage("Gaming preset applied")
+
+    def apply_typing_preset(self):
+        """Apply a preset for typing with home row highlighted"""
+        # Clear keyboard first
+        self.clear_keyboard()
+        
+        # Highlight home row (ASDF JKL;) in green
+        home_row = ["A", "S", "D", "F", "J", "K", "L", ";"]
+        for key in self.keys:
+            if key.key_name in home_row:
+                key.setKeyColor(QColor(0, 230, 115))  # Green
+        
+        # Set other keys to a subtle blue
+        for key in self.keys:
+            if key.key_name not in home_row and key.color == QColor(0, 0, 0):
+                key.setKeyColor(QColor(20, 40, 80))  # Dark blue
+        
+        self.send_config()
+        self.statusBar().showMessage("Typing preset applied")
+
+    def start_global_shortcut_monitor(self):
+        """Start global shortcut monitoring with Wayland compatibility"""
+        if hasattr(self, 'global_listener') and self.global_listener:
+            return  # Already monitoring
+        
+        self.global_keys_pressed = set()
+        
+        # Check if running on Wayland
+        wayland_session = 'WAYLAND_DISPLAY' in os.environ
+        
+        if wayland_session:
+            self.statusBar().showMessage("Wayland detected: using compatible input monitoring")
+            
+            try:
+                # For Wayland we need a different approach
+                # We'll use evdev for direct input device monitoring
+                from evdev import InputDevice, categorize, ecodes, list_devices
+                import threading
+                
+                # For evdev we need to find the keyboard device
+                def setup_evdev_monitor():
+                    devices = [InputDevice(path) for path in list_devices()]
+                    keyboards = []
+                    
+                    for device in devices:
+                        if "keyboard" in device.name.lower() or any(key in device.capabilities() for key in [ecodes.EV_KEY]):
+                            keyboards.append(device)
+                    
+                    if not keyboards:
+                        self.statusBar().showMessage("No keyboard devices found for monitoring")
+                        return False
+                    
+                    # Monitor all keyboard devices
+                    for keyboard in keyboards:
+                        # Start a thread for each keyboard
+                        thread = threading.Thread(
+                            target=self.evdev_monitor_thread,
+                            args=(keyboard,),
+                            daemon=True
+                        )
+                        thread.start()
+                    
+                    self.statusBar().showMessage(f"Monitoring {len(keyboards)} keyboard input devices")
+                    return True
+                
+                # Start evdev monitoring in a separate thread
+                threading.Thread(target=setup_evdev_monitor, daemon=True).start()
+                self.global_listener = True  # Just a flag to indicate monitoring is active
+                
+            except ImportError:
+                self.statusBar().showMessage("Wayland support requires 'evdev' package. Using fallback method.")
+                self._setup_fallback_monitor()
+        else:
+            # X11 or other systems: use pynput
+            self._setup_fallback_monitor()
+
+    def evdev_monitor_thread(self, device):
+        """Monitor a keyboard device with evdev"""
+        try:
+            from evdev import categorize, ecodes
+            
+            # Map evdev keycodes to our key names
+            key_map = {
+                ecodes.KEY_ESC: "Esc",
+                ecodes.KEY_TAB: "Tab",
+                ecodes.KEY_LEFTCTRL: "Ctrl", 
+                ecodes.KEY_RIGHTCTRL: "Ctrl",
+                ecodes.KEY_LEFTSHIFT: "Shift",
+                ecodes.KEY_RIGHTSHIFT: "Shift",
+                ecodes.KEY_LEFTALT: "Alt",
+                ecodes.KEY_RIGHTALT: "Alt",
+                ecodes.KEY_LEFTMETA: "Win",
+                ecodes.KEY_RIGHTMETA: "Win",
+                # Add letter keys
+                ecodes.KEY_A: "A", ecodes.KEY_B: "B", # ... and so on for all keys
+            }
+            
+            # Create reverse mapping for letters
+            for i, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+                key_map[getattr(ecodes, f'KEY_{letter}')] = letter
+            
+            # Create reverse mapping for function keys
+            for i in range(1, 13):
+                key_map[getattr(ecodes, f'KEY_F{i}')] = f'F{i}'
+            
+            # Create reverse mapping for number keys
+            for i in range(10):
+                key_map[getattr(ecodes, f'KEY_{i}')] = str(i)
+            
+            for event in device.read_loop():
+                if event.type == ecodes.EV_KEY:
+                    key_event = categorize(event)
+                    keycode = key_event.scancode
+                    
+                    if keycode in key_map:
+                        key_name = key_map[keycode]
+                        
+                        if key_event.keystate == 1:  # Key down
+                            # Process in main thread to avoid race conditions
+                            QApplication.instance().postEvent(
+                                self, 
+                                CustomKeyEvent(CustomKeyEvent.KeyPress, key_name)
+                            )
+                        elif key_event.keystate == 0:  # Key up
+                            QApplication.instance().postEvent(
+                                self, 
+                                CustomKeyEvent(CustomKeyEvent.KeyRelease, key_name)
+                            )
+        
+        except Exception as e:
+            print(f"Evdev monitor error: {e}")
+
+    def _setup_fallback_monitor(self):
+        """Setup fallback monitoring with pynput"""
+        def on_press(key):
+            """Handle global key press events"""
+            try:
+                key_name = key.char.upper()
+            except (AttributeError, TypeError):
+                # Special key handling
+                key_name = str(key).replace('Key.', '')
+                
+                # Map pynput keys to our key names
+                key_map = {
+                    'ctrl': 'Ctrl',
+                    'ctrl_l': 'Ctrl', 
+                    'ctrl_r': 'Ctrl',
+                    'shift': 'Shift',
+                    'shift_l': 'Shift',
+                    'shift_r': 'Shift',
+                    'alt': 'Alt',
+                    'alt_l': 'Alt',
+                    'alt_r': 'Alt',
+                    'cmd': 'Win',
+                    'cmd_l': 'Win',
+                    'cmd_r': 'Win'
+                }
+                
+                if key_name in key_map:
+                    key_name = key_map[key_name]
+            
+            # If this is a new key press, process it
+            if key_name not in self.global_keys_pressed:
+                self.global_keys_pressed.add(key_name)
+                # Use a thread to avoid blocking the listener
+                threading.Thread(target=self.shortcut_lighting.handle_key_press,
+                              args=(key_name,), daemon=True).start()
+        
+        def on_release(key):
+            """Handle global key release events"""
+            try:
+                key_name = key.char.upper()
+            except (AttributeError, TypeError):
+                # Special key handling
+                key_name = str(key).replace('Key.', '')
+                
+                # Map pynput keys to our key names
+                key_map = {
+                    'ctrl': 'Ctrl',
+                    'ctrl_l': 'Ctrl', 
+                    'ctrl_r': 'Ctrl',
+                    'shift': 'Shift',
+                    'shift_l': 'Shift',
+                    'shift_r': 'Shift',
+                    'alt': 'Alt',
+                    'alt_l': 'Alt',
+                    'alt_r': 'Alt',
+                    'cmd': 'Win',
+                    'cmd_l': 'Win',
+                    'cmd_r': 'Win'
+                }
+                
+                if key_name in key_map:
+                    key_name = key_map[key_name]
+            
+            # Remove from pressed keys
+            if key_name in self.global_keys_pressed:
+                self.global_keys_pressed.remove(key_name)
+                # Use a thread to avoid blocking the listener
+                threading.Thread(target=self.shortcut_lighting.handle_key_release,
+                              args=(key_name,), daemon=True).start()
+        
+        # Start the global key listener in a separate thread
+        self.global_listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
+        self.global_listener.start()
+        self.statusBar().showMessage("Global shortcut monitoring active")
+
+    def stop_global_shortcut_monitor(self):
+        """Stop the global shortcut monitoring"""
+        if hasattr(self, 'global_listener') and self.global_listener:
+            self.global_listener.stop()
+            self.global_listener = None
+            self.global_keys_pressed = set()
+            self.statusBar().showMessage("Global shortcut monitoring stopped")
+
+    def setupSystemTray(self):
+        """Setup system tray icon and menu"""
+        # Create system tray icon
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # Use app icon if available, otherwise use a default
+        self.tray_icon.setIcon(QApplication.instance().windowIcon())
+        # Create the tray menu
+        tray_menu = QMenu()
+        
+        # Add show/hide action
+        self.show_action = QAction("Show Window", self)
+        self.show_action.triggered.connect(self.showNormal)
+        tray_menu.addAction(self.show_action)
+        
+        # Add separator
+        tray_menu.addSeparator()
+        
+        # Add configurations submenu
+        configs_menu = QMenu("Configurations")
+        tray_menu.addMenu(configs_menu)
+        
+        # Add configurations to submenu
+        self.update_tray_configs(configs_menu)
+        
+        # Add refresh configs action
+        refresh_action = QAction("Refresh Configurations", self)
+        refresh_action.triggered.connect(lambda: self.update_tray_configs(configs_menu))
+        tray_menu.addAction(refresh_action)
+        
+        # Add separator
+        tray_menu.addSeparator()
+        
+        # Add system monitoring submenu
+        monitoring_menu = QMenu("System Monitoring")
+        tray_menu.addMenu(monitoring_menu)
+        
+        # Add monitoring options
+        cpu_action = QAction("CPU Usage", self)
+        cpu_action.triggered.connect(lambda: self.start_system_monitoring_from_tray("cpu"))
+        monitoring_menu.addAction(cpu_action)
+        
+        ram_action = QAction("RAM Usage", self)
+        ram_action.triggered.connect(lambda: self.start_system_monitoring_from_tray("ram"))
+        monitoring_menu.addAction(ram_action)
+        
+        battery_action = QAction("Battery Status", self)
+        battery_action.triggered.connect(lambda: self.start_system_monitoring_from_tray("battery"))
+        monitoring_menu.addAction(battery_action)
+        
+        # Add stop monitoring option
+        stop_monitoring = QAction("Stop Monitoring", self)
+        stop_monitoring.triggered.connect(self.stop_system_monitoring)
+        monitoring_menu.addAction(stop_monitoring)
+        
+        # Set the tray icon menu
+        self.tray_icon.setContextMenu(tray_menu)
+        
+        # Show the tray icon
+        self.tray_icon.show()
+        
+        # Connect signal for tray icon activation
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+
+    def update_tray_configs(self, menu):
+        """Update the configurations in the tray menu"""
+        # Clear current items
+        menu.clear()
+        
+        # Get config list
+        configs = self.config_manager.get_config_list()
+        
+        # Add each config as an action
+        for config_name in configs:
+            action = QAction(config_name, self)
+            action.triggered.connect(lambda checked, name=config_name: self.apply_tray_config(name))
+            menu.addAction(action)
+
+    def apply_tray_config(self, config_name):
+        """Apply a configuration from the tray menu"""
+        # Load the configuration
+        self.load_config(config_name)
+        
+        # Ensure keyboard is connected
+        if not self.keyboard.connected:
+            self.connect_to_keyboard()
+        
+        # Send config to keyboard
+        self.send_config()
+        
+        # Show notification
+        self.tray_icon.showMessage(
+            "Configuration Applied",
+            f"Applied configuration: {config_name}",
+            QSystemTrayIcon.Information,
+            2000
+        )
+
+    def connect_to_keyboard(self):
+        """Connect to the keyboard"""
+        if not self.keyboard.connected:
+            if self.keyboard.connect():
+                self.connect_button.setText("Disconnect")
+                self.statusBar().showMessage("Connected to keyboard")
+                self.send_config()  # Apply config immediately on connect
+                return True
+            else:
+                self.statusBar().showMessage("Failed to connect to keyboard")
+                return False
+        return True
+
+    def tray_icon_activated(self, reason):
+        """Handle tray icon activation"""
+        if reason == QSystemTrayIcon.DoubleClick:
+            # Show/hide the window on double click
+            if self.isVisible():
+                self.hide()
+            else:
+                self.showNormal()
+                self.activateWindow()
+
+    def event(self, event):
+        """Handle custom key events from Wayland/evdev monitoring"""
+        if event.type() == CustomKeyEvent.KeyPress:
+            self.shortcut_lighting.handle_key_press(event.key_name)
+            return True
+        elif event.type() == CustomKeyEvent.KeyRelease:
+            self.shortcut_lighting.handle_key_release(event.key_name)
+            return True
+        return super().event(event)
+
+    def start_system_monitoring(self):
+        """Start system monitoring based on selected metric"""
+        metric_map = {
+            "CPU Usage": "cpu",
+            "RAM Usage": "ram",
+            "Battery Status": "battery",
+            "All Metrics": "all"
+        }
+        metric = metric_map[self.monitor_combo.currentText()]
+        
+        # Get update interval
+        interval = self.update_interval_slider.value()
+        
+        if self.system_monitor.start_monitoring(metric, interval):
+            self.statusBar().showMessage(f"System monitoring started: {self.monitor_combo.currentText()}")
+        else:
+            self.statusBar().showMessage("Failed to start system monitoring")
+
+    def stop_system_monitoring(self):
+        """Stop system monitoring"""
+        self.system_monitor.stop_monitoring()
+        self.statusBar().showMessage("System monitoring stopped")
+
+    def start_system_monitoring_from_tray(self, metric):
+        """Start system monitoring from the system tray menu"""
+        # Default to 2 second update interval
+        if self.system_monitor.start_monitoring(metric, 2.0):
+            self.tray_icon.showMessage(
+                "System Monitoring",
+                f"Started monitoring {metric.upper()}",
+                QSystemTrayIcon.Information,
+                2000
+            )
+        else:
+            self.tray_icon.showMessage(
+                "System Monitoring",
+                f"Failed to start monitoring {metric.upper()}",
+                QSystemTrayIcon.Warning,
+                2000
+            ) 

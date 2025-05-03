@@ -1,6 +1,7 @@
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
+import time
 
 class ShortcutLighting:
     def __init__(self, keyboard_app):
@@ -30,6 +31,11 @@ class ShortcutLighting:
         
         # Add a field to store the default lighting config
         self.default_config_name = "Default Green"
+        
+        # Add a field to track when we last updated highlights
+        self.last_highlight_update = 0
+        # How often to refresh the highlight (in seconds)
+        self.highlight_refresh_rate = 0.2
     
     def start_monitor(self):
         """Start monitoring keyboard for shortcuts"""
@@ -77,6 +83,13 @@ class ShortcutLighting:
         """Update key highlighting based on currently pressed keys"""
         if not self.currently_pressed_keys:
             return
+        
+        # Don't update highlights too frequently (throttle)
+        current_time = time.time()
+        if current_time - self.last_highlight_update < self.highlight_refresh_rate:
+            return
+        
+        self.last_highlight_update = current_time
         
         # Convert set to list for the shortcut manager
         pressed_list = list(self.currently_pressed_keys)
