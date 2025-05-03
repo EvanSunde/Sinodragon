@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QPushButton,
                            QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
                            QComboBox, QColorDialog, QLineEdit, QMessageBox, QSlider,
                            QGroupBox, QCheckBox, QFrame, QSplitter, QSpinBox,
-                           QSystemTrayIcon, QMenu, QAction)
+                           QSystemTrayIcon, QMenu, QAction, QTableWidgetItem, QTableWidget, QDialog)
 from PyQt5.QtGui import QColor, QPalette, QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QEvent
 import time
@@ -207,8 +207,13 @@ class KeyboardConfigApp(QMainWindow):
         self.text_display = TextDisplayFeature(self)
         self.effects = EffectsFeature(self)
         
-        # Add system monitoring feature
-        self.system_monitor = SystemMonitorFeature(self)
+        # Create flag for daemon mode
+        self.daemon_mode = False
+        
+        # Initialize global monitoring variables
+        self.global_listener = None
+        self.global_keys_pressed = set()
+        self.is_monitoring_shortcuts = False
     
     def eventFilter(self, obj, event):
         """Filter keyboard events for shortcut highlighting"""
@@ -515,54 +520,54 @@ class KeyboardConfigApp(QMainWindow):
         shortcut_group.setLayout(shortcut_layout)
         controls_panel.addWidget(shortcut_group)
         
-        # System monitoring group
-        system_monitor_group = QGroupBox("System Monitoring")
-        system_monitor_layout = QVBoxLayout()
+        # # System monitoring group
+        # system_monitor_group = QGroupBox("System Monitoring")
+        # system_monitor_layout = QVBoxLayout()
 
-        # Add monitoring selection dropdown
-        system_monitor_layout.addWidget(QLabel("Select Monitoring:"))
-        self.monitor_combo = QComboBox()
-        self.monitor_combo.addItems([
-            "CPU Usage", 
-            "RAM Usage",
-            "Battery Status",
-            "All Metrics"
-        ])
-        system_monitor_layout.addWidget(self.monitor_combo)
+        # # Add monitoring selection dropdown
+        # system_monitor_layout.addWidget(QLabel("Select Monitoring:"))
+        # self.monitor_combo = QComboBox()
+        # self.monitor_combo.addItems([
+        #     "CPU Usage", 
+        #     "RAM Usage",
+        #     "Battery Status",
+        #     "All Metrics"
+        # ])
+        # system_monitor_layout.addWidget(self.monitor_combo)
 
-        # Add update interval slider
-        update_interval_layout = QHBoxLayout()
-        update_interval_layout.addWidget(QLabel("Update Interval:"))
-        self.update_interval_slider = QSlider(Qt.Horizontal)
-        self.update_interval_slider.setMinimum(1)
-        self.update_interval_slider.setMaximum(10)
-        self.update_interval_slider.setValue(2)
-        self.update_interval_slider.setTickPosition(QSlider.TicksBelow)
-        self.update_interval_slider.setTickInterval(1)
-        update_interval_layout.addWidget(self.update_interval_slider)
-        self.update_interval_label = QLabel("2s")
-        self.update_interval_slider.valueChanged.connect(
-            lambda v: self.update_interval_label.setText(f"{v}s")
-        )
-        update_interval_layout.addWidget(self.update_interval_label)
-        system_monitor_layout.addLayout(update_interval_layout)
+        # # Add update interval slider
+        # update_interval_layout = QHBoxLayout()
+        # update_interval_layout.addWidget(QLabel("Update Interval:"))
+        # self.update_interval_slider = QSlider(Qt.Horizontal)
+        # self.update_interval_slider.setMinimum(1)
+        # self.update_interval_slider.setMaximum(10)
+        # self.update_interval_slider.setValue(2)
+        # self.update_interval_slider.setTickPosition(QSlider.TicksBelow)
+        # self.update_interval_slider.setTickInterval(1)
+        # update_interval_layout.addWidget(self.update_interval_slider)
+        # self.update_interval_label = QLabel("2s")
+        # self.update_interval_slider.valueChanged.connect(
+        #     lambda v: self.update_interval_label.setText(f"{v}s")
+        # )
+        # update_interval_layout.addWidget(self.update_interval_label)
+        # system_monitor_layout.addLayout(update_interval_layout)
 
-        # Start/stop monitoring buttons
-        monitor_buttons_layout = QHBoxLayout()
+        ## Start/stop monitoring buttons
+        # monitor_buttons_layout = QHBoxLayout()
 
-        self.start_monitor_btn = QPushButton("Start Monitoring")
-        self.start_monitor_btn.clicked.connect(self.start_system_monitoring)
-        monitor_buttons_layout.addWidget(self.start_monitor_btn)
+        # self.start_monitor_btn = QPushButton("Start Monitoring")
+        # self.start_monitor_btn.clicked.connect(self.start_system_monitoring)
+        # monitor_buttons_layout.addWidget(self.start_monitor_btn)
 
-        self.stop_monitor_btn = QPushButton("Stop Monitoring")
-        self.stop_monitor_btn.clicked.connect(self.stop_system_monitoring)
-        monitor_buttons_layout.addWidget(self.stop_monitor_btn)
+        # self.stop_monitor_btn = QPushButton("Stop Monitoring")
+        # self.stop_monitor_btn.clicked.connect(self.stop_system_monitoring)
+        # monitor_buttons_layout.addWidget(self.stop_monitor_btn)
 
-        system_monitor_layout.addLayout(monitor_buttons_layout)
+        # system_monitor_layout.addLayout(monitor_buttons_layout)
 
-        # Add the group to controls panel
-        system_monitor_group.setLayout(system_monitor_layout)
-        controls_panel.addWidget(system_monitor_group)
+        # # Add the group to controls panel
+        # system_monitor_group.setLayout(system_monitor_layout)
+        # controls_panel.addWidget(system_monitor_group)
         
         # Create a group for effects
         effects_group = QGroupBox("Effects")
@@ -927,24 +932,20 @@ class KeyboardConfigApp(QMainWindow):
         self.shortcut_lighting.stop_monitor()
     
     def toggle_shortcut_monitor(self):
-        """Toggle shortcut monitoring on/off"""
+        """Toggle shortcut monitoring on/off using global monitoring only"""
         if self.shortcut_toggle.isChecked():
             self.shortcut_toggle.setText("Stop Shortcut Monitor")
+            # Start global monitoring directly
             self.shortcut_lighting.start_monitor()
-            
-            # If global monitoring is enabled, start the global listener
-            if self.global_shortcut_checkbox.isChecked():
-                self.start_global_shortcut_monitor()
-            
-            self.statusBar().showMessage("Shortcut monitoring started")
+            self.start_global_shortcut_monitor()
+            self.is_monitoring_shortcuts = True
+            self.statusBar().showMessage("Global shortcut monitoring started")
         else:
             self.shortcut_toggle.setText("Start Shortcut Monitor")
             self.shortcut_lighting.stop_monitor()
-            
-            # Stop global listener if active
             self.stop_global_shortcut_monitor()
-            
-            self.statusBar().showMessage("Shortcut monitoring stopped")
+            self.is_monitoring_shortcuts = False
+            self.statusBar().showMessage("Global shortcut monitoring stopped")
 
     def choose_highlight_color(self):
         """Choose a custom color for highlighting shortcuts"""
@@ -955,8 +956,6 @@ class KeyboardConfigApp(QMainWindow):
 
     def manage_shortcuts(self):
         """Open a dialog to manage keyboard shortcuts"""
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton
-        
         dialog = QDialog(self)
         dialog.setWindowTitle("Manage Shortcut Highlighting")
         dialog.setMinimumSize(500, 400)
@@ -1020,8 +1019,6 @@ class KeyboardConfigApp(QMainWindow):
 
     def add_edit_shortcut(self, table, edit=False):
         """Add a new shortcut or edit existing one"""
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
-        
         dialog = QDialog(self)
         dialog.setWindowTitle("Add Shortcut Highlighting" if not edit else "Edit Shortcut Highlighting")
         
@@ -1149,6 +1146,12 @@ class KeyboardConfigApp(QMainWindow):
 
     def closeEvent(self, event):
         """Handle application close event"""
+        # If in daemon mode, just hide the window
+        if self.daemon_mode:
+            event.ignore()
+            self.hide()
+            return
+        
         # Check if should minimize to tray instead
         minimize_to_tray = True  # Could be a setting
         
@@ -1169,7 +1172,8 @@ class KeyboardConfigApp(QMainWindow):
             self.stop_global_shortcut_monitor()
             
             # Stop shortcut monitoring
-            self.shortcut_lighting.stop_monitor()
+            if hasattr(self, 'shortcut_lighting'):
+                self.shortcut_lighting.stop_monitor()
             
             # Disconnect from keyboard
             if self.keyboard.connected:
@@ -1206,8 +1210,6 @@ class KeyboardConfigApp(QMainWindow):
 
     def manage_modifier_colors(self):
         """Open a dialog to manage modifier key colors"""
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGridLayout
-        
         dialog = QDialog(self)
         dialog.setWindowTitle("Modifier Key Colors")
         dialog.setMinimumWidth(400)
@@ -1489,10 +1491,8 @@ class KeyboardConfigApp(QMainWindow):
         try:
             from evdev import categorize, ecodes
             
-            # Map evdev keycodes to our key names
-            key_map = {
-                ecodes.KEY_ESC: "Esc",
-                ecodes.KEY_TAB: "Tab",
+            # Map evdev keycodes to our key names - ONLY MODIFIER KEYS
+            modifier_key_map = {
                 ecodes.KEY_LEFTCTRL: "Ctrl", 
                 ecodes.KEY_RIGHTCTRL: "Ctrl",
                 ecodes.KEY_LEFTSHIFT: "Shift",
@@ -1501,29 +1501,16 @@ class KeyboardConfigApp(QMainWindow):
                 ecodes.KEY_RIGHTALT: "Alt",
                 ecodes.KEY_LEFTMETA: "Win",
                 ecodes.KEY_RIGHTMETA: "Win",
-                # Add letter keys
-                ecodes.KEY_A: "A", ecodes.KEY_B: "B", # ... and so on for all keys
             }
-            
-            # Create reverse mapping for letters
-            for i, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
-                key_map[getattr(ecodes, f'KEY_{letter}')] = letter
-            
-            # Create reverse mapping for function keys
-            for i in range(1, 13):
-                key_map[getattr(ecodes, f'KEY_F{i}')] = f'F{i}'
-            
-            # Create reverse mapping for number keys
-            for i in range(10):
-                key_map[getattr(ecodes, f'KEY_{i}')] = str(i)
             
             for event in device.read_loop():
                 if event.type == ecodes.EV_KEY:
                     key_event = categorize(event)
                     keycode = key_event.scancode
                     
-                    if keycode in key_map:
-                        key_name = key_map[keycode]
+                    # Only process modifier keys
+                    if keycode in modifier_key_map:
+                        key_name = modifier_key_map[keycode]
                         
                         if key_event.keystate == 1:  # Key down
                             # Process in main thread to avoid race conditions
@@ -1545,7 +1532,8 @@ class KeyboardConfigApp(QMainWindow):
         def on_press(key):
             """Handle global key press events"""
             try:
-                key_name = key.char.upper()
+                # Filter out regular character keys
+                return
             except (AttributeError, TypeError):
                 # Special key handling
                 key_name = str(key).replace('Key.', '')
@@ -1566,20 +1554,21 @@ class KeyboardConfigApp(QMainWindow):
                     'cmd_r': 'Win'
                 }
                 
+                # Only process modifier keys
                 if key_name in key_map:
                     key_name = key_map[key_name]
-            
-            # If this is a new key press, process it
-            if key_name not in self.global_keys_pressed:
-                self.global_keys_pressed.add(key_name)
-                # Use a thread to avoid blocking the listener
-                threading.Thread(target=self.shortcut_lighting.handle_key_press,
-                              args=(key_name,), daemon=True).start()
+                    # If this is a new key press, process it
+                    if key_name not in self.global_keys_pressed:
+                        self.global_keys_pressed.add(key_name)
+                        # Use a thread to avoid blocking the listener
+                        threading.Thread(target=self.shortcut_lighting.handle_key_press,
+                                      args=(key_name,), daemon=True).start()
         
         def on_release(key):
             """Handle global key release events"""
             try:
-                key_name = key.char.upper()
+                # Filter out regular character keys
+                return
             except (AttributeError, TypeError):
                 # Special key handling
                 key_name = str(key).replace('Key.', '')
@@ -1600,28 +1589,36 @@ class KeyboardConfigApp(QMainWindow):
                     'cmd_r': 'Win'
                 }
                 
+                # Only process modifier keys
                 if key_name in key_map:
                     key_name = key_map[key_name]
-            
-            # Remove from pressed keys
-            if key_name in self.global_keys_pressed:
-                self.global_keys_pressed.remove(key_name)
-                # Use a thread to avoid blocking the listener
-                threading.Thread(target=self.shortcut_lighting.handle_key_release,
-                              args=(key_name,), daemon=True).start()
+                    # Remove from pressed keys
+                    if key_name in self.global_keys_pressed:
+                        self.global_keys_pressed.remove(key_name)
+                        # Use a thread to avoid blocking the listener
+                        threading.Thread(target=self.shortcut_lighting.handle_key_release,
+                                      args=(key_name,), daemon=True).start()
         
         # Start the global key listener in a separate thread
         self.global_listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
         self.global_listener.start()
-        self.statusBar().showMessage("Global shortcut monitoring active")
+        self.statusBar().showMessage("Global shortcut monitoring active (modifiers only)")
 
     def stop_global_shortcut_monitor(self):
         """Stop the global shortcut monitoring"""
-        if hasattr(self, 'global_listener') and self.global_listener:
+        # Check if global_listener is an actual listener object and not a boolean
+        if hasattr(self.global_listener, 'stop') and callable(self.global_listener.stop):
             self.global_listener.stop()
             self.global_listener = None
-            self.global_keys_pressed = set()
-            self.statusBar().showMessage("Global shortcut monitoring stopped")
+        else:
+            # Just reset it if it's not a proper listener
+            self.global_listener = None
+        
+        # Additional cleanup
+        if hasattr(self, 'is_monitoring_shortcuts'):
+            self.is_monitoring_shortcuts = False
+        
+        self.statusBar().showMessage("Global shortcut monitoring stopped")
 
     def setupSystemTray(self):
         """Setup system tray icon and menu"""
@@ -1656,27 +1653,23 @@ class KeyboardConfigApp(QMainWindow):
         # Add separator
         tray_menu.addSeparator()
         
-        # Add system monitoring submenu
-        monitoring_menu = QMenu("System Monitoring")
-        tray_menu.addMenu(monitoring_menu)
+        # Add shortcut monitoring toggle
+        self.tray_shortcut_action = QAction("Start Shortcut Monitoring", self)
+        self.tray_shortcut_action.triggered.connect(self.toggle_shortcut_monitoring_from_tray)
+        tray_menu.addAction(self.tray_shortcut_action)
         
-        # Add monitoring options
-        cpu_action = QAction("CPU Usage", self)
-        cpu_action.triggered.connect(lambda: self.start_system_monitoring_from_tray("cpu"))
-        monitoring_menu.addAction(cpu_action)
+        # Add daemon mode toggle
+        self.daemon_mode_action = QAction("Enter Daemon Mode", self)
+        self.daemon_mode_action.triggered.connect(self.toggle_daemon_mode)
+        tray_menu.addAction(self.daemon_mode_action)
         
-        ram_action = QAction("RAM Usage", self)
-        ram_action.triggered.connect(lambda: self.start_system_monitoring_from_tray("ram"))
-        monitoring_menu.addAction(ram_action)
+        # Add separator
+        tray_menu.addSeparator()
         
-        battery_action = QAction("Battery Status", self)
-        battery_action.triggered.connect(lambda: self.start_system_monitoring_from_tray("battery"))
-        monitoring_menu.addAction(battery_action)
-        
-        # Add stop monitoring option
-        stop_monitoring = QAction("Stop Monitoring", self)
-        stop_monitoring.triggered.connect(self.stop_system_monitoring)
-        monitoring_menu.addAction(stop_monitoring)
+        # Add quit option
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.quit_application)
+        tray_menu.addAction(quit_action)
         
         # Set the tray icon menu
         self.tray_icon.setContextMenu(tray_menu)
@@ -1754,43 +1747,82 @@ class KeyboardConfigApp(QMainWindow):
             return True
         return super().event(event)
 
-    def start_system_monitoring(self):
-        """Start system monitoring based on selected metric"""
-        metric_map = {
-            "CPU Usage": "cpu",
-            "RAM Usage": "ram",
-            "Battery Status": "battery",
-            "All Metrics": "all"
-        }
-        metric = metric_map[self.monitor_combo.currentText()]
-        
-        # Get update interval
-        interval = self.update_interval_slider.value()
-        
-        if self.system_monitor.start_monitoring(metric, interval):
-            self.statusBar().showMessage(f"System monitoring started: {self.monitor_combo.currentText()}")
-        else:
-            self.statusBar().showMessage("Failed to start system monitoring")
-
-    def stop_system_monitoring(self):
-        """Stop system monitoring"""
-        self.system_monitor.stop_monitoring()
-        self.statusBar().showMessage("System monitoring stopped")
-
-    def start_system_monitoring_from_tray(self, metric):
-        """Start system monitoring from the system tray menu"""
-        # Default to 2 second update interval
-        if self.system_monitor.start_monitoring(metric, 2.0):
+    def toggle_shortcut_monitoring_from_tray(self):
+        """Toggle shortcut monitoring from system tray"""
+        if self.is_monitoring_shortcuts:
+            # Stop monitoring
+            self.stop_global_shortcut_monitor()
+            self.is_monitoring_shortcuts = False
+            self.tray_shortcut_action.setText("Start Shortcut Monitoring")
             self.tray_icon.showMessage(
-                "System Monitoring",
-                f"Started monitoring {metric.upper()}",
+                "Shortcut Monitoring",
+                "Shortcut monitoring stopped",
                 QSystemTrayIcon.Information,
                 2000
             )
         else:
+            # Start monitoring
+            self.start_global_shortcut_monitor()
+            self.is_monitoring_shortcuts = True
+            self.tray_shortcut_action.setText("Stop Shortcut Monitoring")
             self.tray_icon.showMessage(
-                "System Monitoring",
-                f"Failed to start monitoring {metric.upper()}",
-                QSystemTrayIcon.Warning,
+                "Shortcut Monitoring",
+                "Shortcut monitoring started",
+                QSystemTrayIcon.Information,
                 2000
-            ) 
+            )
+            
+            # Update GUI if it's visible
+            if hasattr(self, 'shortcut_toggle') and self.isVisible():
+                self.shortcut_toggle.setChecked(True)
+                self.shortcut_toggle.setText("Stop Shortcut Monitor")
+
+    def toggle_daemon_mode(self):
+        """Toggle daemon mode (shortcut monitoring only)"""
+        if self.daemon_mode:
+            # Exit daemon mode
+            self.daemon_mode = False
+            self.daemon_mode_action.setText("Enter Daemon Mode")
+            self.show_action.setEnabled(True)
+            
+            # Show notification
+            self.tray_icon.showMessage(
+                "Daemon Mode",
+                "Exited daemon mode",
+                QSystemTrayIcon.Information,
+                2000
+            )
+        else:
+            # Enter daemon mode
+            self.daemon_mode = True
+            self.daemon_mode_action.setText("Exit Daemon Mode")
+            self.hide()  # Hide the main window
+            self.show_action.setEnabled(False)  # Disable show window option
+            
+            # Start shortcut monitoring if not already active
+            if not self.is_monitoring_shortcuts:
+                self.toggle_shortcut_monitoring_from_tray()
+            
+            # Show notification
+            self.tray_icon.showMessage(
+                "Daemon Mode",
+                "Entered daemon mode (shortcut monitoring only)",
+                QSystemTrayIcon.Information,
+                2000
+            )
+
+    def quit_application(self):
+        """Quit the application entirely"""
+        # Stop any active listeners
+        self.stop_global_shortcut_monitor()
+        
+        # Stop shortcut monitoring
+        if hasattr(self, 'shortcut_lighting'):
+            self.shortcut_lighting.stop_monitor()
+        
+        # Disconnect from keyboard
+        if self.keyboard.connected:
+            self.keyboard.disconnect()
+        
+        # Exit the application
+        QApplication.instance().quit() 
