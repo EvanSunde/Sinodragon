@@ -133,6 +133,14 @@ class KeyButton(QPushButton):
             }}
         """)
 
+    def mouseReleaseEvent(self, event):
+        """Handle mouse click event for a key"""
+        # Call the parent app's key click handler
+        self.parent.handle_key_click(self)
+        
+        # Accept the event
+        event.accept()
+
 class ColorDisplay(QFrame):
     clicked = pyqtSignal()
     
@@ -316,7 +324,7 @@ class KeyboardConfigApp(QMainWindow):
             for row, key_name in enumerate(column):
                 if key_name != "NAN":
                     key = KeyButton(key_name, key_index, self)
-                    key.clicked.connect(lambda checked, k=key: self.key_clicked(k))
+                    key.clicked.connect(lambda checked, k=key: self.handle_key_click(k))
                     keyboard_grid.addWidget(key, row, col)
                     self.keys.append(key)
                     key_index += 1
@@ -431,14 +439,36 @@ class KeyboardConfigApp(QMainWindow):
         selection_brightness_layout.addWidget(QLabel("Region Brightness:"))
         
         self.region_intensity_slider = QSlider(Qt.Horizontal)
-        self.region_intensity_slider.setMinimum(0)
+        self.region_intensity_slider.setMinimum(1)
         self.region_intensity_slider.setMaximum(100)
         self.region_intensity_slider.setValue(100)
-        self.region_intensity_slider.valueChanged.connect(self.region_intensity_changed)
-        selection_brightness_layout.addWidget(self.region_intensity_slider)
-        
         self.region_intensity_label = QLabel("100%")
-        selection_brightness_layout.addWidget(self.region_intensity_label)
+        
+        # Connect slider change to update both the label and the colors
+        def update_intensity(value):
+            self.region_intensity_label.setText(f"{value}%")
+            self.region_intensity_label.repaint()  # Force redraw
+            intensity = value / 100.0
+            
+            # Apply the intensity to selected keys
+            if self.selected_keys:
+                for key in self.selected_keys:
+                    # Get the base color from the key
+                    base_color = key.color
+                    
+                    # Apply intensity while preserving the color's hue
+                    r = min(255, int(base_color.red() * intensity))
+                    g = min(255, int(base_color.green() * intensity))
+                    b = min(255, int(base_color.blue() * intensity))
+                    
+                    # Update the key's color
+                    key.setKeyColor(QColor(r, g, b))
+                
+                # If auto-reload is on, send the updated config
+                if self.auto_reload and self.keyboard.connected:
+                    self.send_config()
+        
+        self.region_intensity_slider.valueChanged.connect(update_intensity)
         
         selection_controls.addLayout(selection_brightness_layout)
         
@@ -519,55 +549,6 @@ class KeyboardConfigApp(QMainWindow):
         # Add shortcut group to layout
         shortcut_group.setLayout(shortcut_layout)
         controls_panel.addWidget(shortcut_group)
-        
-        # # System monitoring group
-        # system_monitor_group = QGroupBox("System Monitoring")
-        # system_monitor_layout = QVBoxLayout()
-
-        # # Add monitoring selection dropdown
-        # system_monitor_layout.addWidget(QLabel("Select Monitoring:"))
-        # self.monitor_combo = QComboBox()
-        # self.monitor_combo.addItems([
-        #     "CPU Usage", 
-        #     "RAM Usage",
-        #     "Battery Status",
-        #     "All Metrics"
-        # ])
-        # system_monitor_layout.addWidget(self.monitor_combo)
-
-        # # Add update interval slider
-        # update_interval_layout = QHBoxLayout()
-        # update_interval_layout.addWidget(QLabel("Update Interval:"))
-        # self.update_interval_slider = QSlider(Qt.Horizontal)
-        # self.update_interval_slider.setMinimum(1)
-        # self.update_interval_slider.setMaximum(10)
-        # self.update_interval_slider.setValue(2)
-        # self.update_interval_slider.setTickPosition(QSlider.TicksBelow)
-        # self.update_interval_slider.setTickInterval(1)
-        # update_interval_layout.addWidget(self.update_interval_slider)
-        # self.update_interval_label = QLabel("2s")
-        # self.update_interval_slider.valueChanged.connect(
-        #     lambda v: self.update_interval_label.setText(f"{v}s")
-        # )
-        # update_interval_layout.addWidget(self.update_interval_label)
-        # system_monitor_layout.addLayout(update_interval_layout)
-
-        ## Start/stop monitoring buttons
-        # monitor_buttons_layout = QHBoxLayout()
-
-        # self.start_monitor_btn = QPushButton("Start Monitoring")
-        # self.start_monitor_btn.clicked.connect(self.start_system_monitoring)
-        # monitor_buttons_layout.addWidget(self.start_monitor_btn)
-
-        # self.stop_monitor_btn = QPushButton("Stop Monitoring")
-        # self.stop_monitor_btn.clicked.connect(self.stop_system_monitoring)
-        # monitor_buttons_layout.addWidget(self.stop_monitor_btn)
-
-        # system_monitor_layout.addLayout(monitor_buttons_layout)
-
-        # # Add the group to controls panel
-        # system_monitor_group.setLayout(system_monitor_layout)
-        # controls_panel.addWidget(system_monitor_group)
         
         # Create a group for effects
         effects_group = QGroupBox("Effects")
@@ -660,10 +641,10 @@ class KeyboardConfigApp(QMainWindow):
         
         self.setCentralWidget(central_widget)
     
-    def key_clicked(self, key):
-        """Handle when a key is clicked - either select it, toggle, or apply the current color"""
+    def handle_key_click(self, key):
+        """Handle a key click event in the keyboard layout"""
+        # If in selection mode, add/remove from selection
         if self.selection_mode:
-            # In selection mode, toggle the key's selection state
             if key in self.selected_keys:
                 self.selected_keys.remove(key)
                 key.setSelected(False)
@@ -671,14 +652,10 @@ class KeyboardConfigApp(QMainWindow):
                 self.selected_keys.append(key)
                 key.setSelected(True)
         else:
-            # In normal mode, toggle between current color and off (black)
-            if key.color == QColor(0, 0, 0):
-                # If key is off, apply current color
-                key.setKeyColor(self.current_color)
-            else:
-                # If key has a color, turn it off
-                key.setKeyColor(QColor(0, 0, 0))
+            # Apply color to the clicked key
+            key.setKeyColor(self.current_color)
             
+            # Add this: If auto-reload is enabled, apply the config
             if self.auto_reload and self.keyboard.connected:
                 self.send_config()
     
@@ -714,36 +691,6 @@ class KeyboardConfigApp(QMainWindow):
         
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
-    
-    def region_intensity_changed(self, value):
-        """Handle change in region intensity slider"""
-        self.region_intensity_label.setText(f"{value}%")
-        
-        # Apply intensity to selected keys
-        if self.selected_keys:
-            # Calculate intensity factor
-            intensity = value / 100.0
-            
-            # For each selected key, adjust brightness
-            for key in self.selected_keys:
-                original_color = key.color
-                # Preserve hue and saturation but adjust value (brightness)
-                h, s, v = self.rgb_to_hsv(original_color.red(), original_color.green(), original_color.blue())
-                new_color = self.hsv_to_rgb(h, s, v * intensity)
-                key.setKeyColor(QColor(*new_color))
-            
-            # Restart the timer - this will delay sending the config until the user stops changing values
-            self.intensity_timer.start(200)  # 200ms delay
-
-    def rgb_to_hsv(self, r, g, b):
-        """Convert RGB to HSV color values"""
-        r, g, b = r/255.0, g/255.0, b/255.0
-        return colorsys.rgb_to_hsv(r, g, b)
-
-    def hsv_to_rgb(self, h, s, v):
-        """Convert HSV to RGB color values"""
-        r, g, b = colorsys.hsv_to_rgb(h, s, v)
-        return int(r*255), int(g*255), int(b*255)
     
     def set_current_color(self, color):
         """Set the current working color"""
@@ -784,6 +731,7 @@ class KeyboardConfigApp(QMainWindow):
         self.auto_reload_btn.setText(f"Auto-Reload: {'ON' if self.auto_reload else 'OFF'}")
         
         if self.auto_reload:
+            self.send_config()
             self.reload_timer.start(500)  # Check every 500ms
         else:
             self.reload_timer.stop()
@@ -793,8 +741,16 @@ class KeyboardConfigApp(QMainWindow):
         value = self.intensity_slider.value()
         self.intensity_label.setText(f"{value}%")
         
-        # Restart the timer - this will delay sending the config until the user stops changing values
-        self.intensity_timer.start(200)  # 200ms delay
+        # Update UI immediately
+        self.intensity_label.repaint()
+        
+        # Apply immediately if auto-reload is on
+        if self.auto_reload and self.keyboard.connected:
+            # Apply directly instead of using the timer for more responsive UI
+            self.send_config()
+        else:
+            # Still use the timer for debouncing when auto-reload is off
+            self.intensity_timer.start(100)  # Shorter delay (100ms) for better responsiveness
 
     def apply_intensity(self):
         """Apply the intensity change after slider movement has stopped"""
@@ -803,27 +759,23 @@ class KeyboardConfigApp(QMainWindow):
     
     def send_config(self):
         if not self.keyboard.connected:
-            self.statusBar().showMessage("Connecting to keyboard...")
             if not self.keyboard.connect():
                 self.statusBar().showMessage("Failed to connect")
                 return
             self.connect_button.setText("Disconnect")
         
-        # Collect colors for all keys
-        key_colors = []
-        for key in self.keys:
-            key_colors.append((key.color.red(), key.color.green(), key.color.blue()))
-        
-        # Get current intensity (0.0-1.0)
+        # Get the current intensity
         intensity = self.intensity_slider.value() / 100.0
         
-        self.statusBar().showMessage("Sending configuration to keyboard...")
+        # Use the memory-mapped format for faster transmission
+        config_name = self.config_combo.currentText()
+        memory_map = self.config_manager.get_config_in_memory_map(config_name)
         
-        # Pass intensity to the send_led_config method
-        success = self.keyboard.send_led_config(key_colors, intensity)
+        # Send directly using the memory map
+        success = self.keyboard.send_led_config(memory_map, intensity)
+        
         if success:
             self.statusBar().showMessage("Configuration applied successfully")
-            self.provide_feedback()
         else:
             self.statusBar().showMessage("Failed to apply configuration")
     
@@ -1096,9 +1048,6 @@ class KeyboardConfigApp(QMainWindow):
             
             table.setItem(i, 0, mod_item)
             table.setItem(i, 1, keys_item)
-        
-        # Close dialog
-        dialog.accept()
 
     def remove_shortcut(self, table):
         """Remove the selected shortcut"""

@@ -18,6 +18,27 @@ class KeyboardController:
         self.packet_header = [0x08, 0x0A, 0x7A, 0x01]
         self.packet_length = 382
         self.connected = False
+        
+        # Add keyboard layout definition for packet creation
+        self.layout_def = [
+            ["Esc", "`", "Tab", "Caps", "Shift", "Ctrl"],
+            ["F1", "1", "Q", "A", "Z", "Win"],
+            ["F2", "2", "W", "S", "X", "Alt"],
+            ["F3", "3", "E", "D", "C", "NAN"],
+            ["F4", "4", "R", "F", "V", "NAN"],
+            ["F5", "5", "T", "G", "B", "Space"],
+            ["F6", "6", "Y", "H", "N", "NAN"],
+            ["F7", "7", "U", "J", "M", "NAN"],
+            ["F8", "8", "I", "K", ",", "Alt"],
+            ["F9", "9", "O", "L", ".", "Fn"],
+            ["F10", "0", "P", ";", "/", "Ctrl"],
+            ["F11", "-", "[", "'", "NAN", "NAN"],
+            ["F12", "=", "]", "NAN", "NAN", "NAN"],
+            ["PrtSc", "Bksp", "\\", "Enter", "Shift", "←"],
+            ["Pause", "NAN", "NAN", "NAN", "↑", "↓"],
+            ["Del", "Home", "End", "PgUp", "PgDn", "→"]
+        ]
+        
         logger.debug(f"KeyboardController initialized with VID:{self.vendor_id:04x} PID:{self.product_id:04x}")
         
     def connect(self):
@@ -82,48 +103,64 @@ class KeyboardController:
     
     def send_led_config(self, key_colors, intensity=1.0):
         """
-        Send the LED configuration packet to the keyboard
+        Send LED configuration packet to the keyboard
         
         Args:
-            key_colors: List of RGB tuples (r, g, b) for each key, following the keyboard layout
-            intensity: Float between 0.0 and 1.0 to scale the brightness
+            key_colors: Either a list of RGB tuples or a ConfigManager memory map
+            intensity: Float between 0.0 and 1.0 to scale brightness
         """
         if not self.connected:
-            logger.info("Not connected to keyboard, attempting to connect...")
             if not self.connect():
-                logger.error("Failed to connect to keyboard for sending LED config")
                 return False
         
-        # Create packet with intensity adjustment
-        logger.debug(f"Creating LED config packet for {len(key_colors)} keys with intensity {intensity:.2f}")
-        packet = self.create_packet(key_colors, intensity)
+        # Fix: Ensure intensity is properly bounded between 0.01 and 1.0
+        # (avoid 0.0 which would make all keys black)
+        intensity = max(0.01, min(1.0, intensity))
+        
+        # Check if we're using a memory map (faster)
+        if isinstance(key_colors, memoryview):
+            # Create packet directly from memory map
+            packet = bytearray(self.packet_header)
+            
+            # Add colors directly from memory map, adjusting for intensity
+            color_idx = 0
+            
+            # Process layout definition in order
+            for row in self.layout_def:
+                for key in row:
+                    if key == "NAN":
+                        # Add zeros for NAN positions
+                        packet.extend([0, 0, 0])
+                    else:
+                        # Get color from memory map
+                        if color_idx < 126:
+                            # Fix: Use direct calculation without float-to-int conversion issues
+                            r = min(255, int(key_colors[color_idx*3] * intensity))
+                            g = min(255, int(key_colors[color_idx*3+1] * intensity))
+                            b = min(255, int(key_colors[color_idx*3+2] * intensity))
+                            packet.extend([r, g, b])
+                            color_idx += 1
+                        else:
+                            packet.extend([0, 0, 0])
+            
+            # Add padding to reach required length (important!)
+            padding_needed = max(0, self.packet_length - len(packet))
+            if padding_needed > 0:
+                while len(packet) < self.packet_length:
+                    packet.extend([0, 0, 0])
+            
+            # Ensure packet is exactly the required length
+            if len(packet) != self.packet_length:
+                packet = packet[:self.packet_length]
+        else:
+            # Use the traditional method
+            packet = self.create_packet(key_colors, intensity)
         
         try:
-            # Log packet details (truncated for readability)
-            packet_hex = ' '.join([f'{b:02X}' for b in packet[:20]]) + "..." 
-            logger.debug(f"Sending packet (showing first 20 bytes): {packet_hex}")
-            
             # Send as feature report
-            result = self.device.send_feature_report(packet)
-            # In hidapi, a negative result doesn't always indicate an error
-            if result < 0:
-                logger.info(f"Feature report sent with result: {result} (this may be normal with some HID implementations)")
-            else:
-                logger.info(f"Sent feature report, bytes written: {result}")
-            
-            # Try to read any response from the keyboard
-            try:
-                time.sleep(0.1)  # Give device time to process
-                response = self.device.read(64)  # Try to read any response
-                if response:
-                    logger.info(f"Device response: {' '.join([f'{b:02X}' for b in response])}")
-            except Exception as e:
-                logger.debug(f"No response from device: {e}")
-            
+            self.device.send_feature_report(packet)
             return True
         except Exception as e:
-            logger.error(f"Failed to send feature report: {e}", exc_info=True)
-            logger.info("Attempting to reconnect after failure...")
             self.disconnect()
             return False
     
@@ -150,31 +187,11 @@ class KeyboardController:
             adj_b = int(b * intensity)
             adjusted_colors.append((adj_r, adj_g, adj_b))
         
-        # Keyboard layout with NANs included
-        layout_def = [
-            ["Esc", "`", "Tab", "Caps", "Shift", "Ctrl"],
-            ["F1", "1", "Q", "A", "Z", "Win"],
-            ["F2", "2", "W", "S", "X", "Alt"],
-            ["F3", "3", "E", "D", "C", "NAN"],
-            ["F4", "4", "R", "F", "V", "NAN"],
-            ["F5", "5", "T", "G", "B", "Space"],
-            ["F6", "6", "Y", "H", "N", "NAN"],
-            ["F7", "7", "U", "J", "M", "NAN"],
-            ["F8", "8", "I", "K", ",", "Alt"],
-            ["F9", "9", "O", "L", ".", "Fn"],
-            ["F10", "0", "P", ";", "/", "Ctrl"],
-            ["F11", "-", "[", "'", "NAN", "NAN"],
-            ["F12", "=", "]", "NAN", "NAN", "NAN"],
-            ["PrtSc", "Bksp", "\\", "Enter", "Shift", "←"],
-            ["Pause", "NAN", "NAN", "NAN", "↑", "↓"],
-            ["Del", "Home", "End", "PgUp", "PgDn", "→"]
-        ]
-        
         # Current key color index
         color_idx = 0
         
         # Go through layout definition in order, row by row
-        for row in layout_def:
+        for row in self.layout_def:
             for key in row:
                 if key == "NAN":
                     # Add 00 00 00 for NAN positions
