@@ -1,10 +1,15 @@
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal, QObject
 import time
 
-class ShortcutLighting:
+class ShortcutLighting(QObject):
+    # Define signals for key press/release events
+    key_pressed = pyqtSignal(str)
+    key_released = pyqtSignal(str)
+    
     def __init__(self, keyboard_app):
+        super().__init__()
         self.app = keyboard_app
         self.shortcut_manager = keyboard_app.shortcut_manager
         self.keyboard = keyboard_app.keyboard
@@ -36,6 +41,15 @@ class ShortcutLighting:
         self.last_highlight_update = 0
         # How often to refresh the highlight (in seconds)
         self.highlight_refresh_rate = 0.2
+        
+        # Optimization: Cache for currently displayed colors to avoid redundant updates
+        self.key_color_cache = {}
+        self.update_pending = False
+        self.batch_update_timer = None
+        if hasattr(self.app, 'QTimer'):
+            self.batch_update_timer = self.app.QTimer()
+            self.batch_update_timer.setSingleShot(True)
+            self.batch_update_timer.timeout.connect(self.apply_pending_updates)
     
     def start_monitor(self):
         """Start monitoring keyboard for shortcuts"""
@@ -45,6 +59,8 @@ class ShortcutLighting:
         self.monitor_active = True
         self.currently_pressed_keys.clear()
         self.original_state_saved = False
+        # Initialize color cache
+        self.key_color_cache = {}
         self.app.statusBar().showMessage("Shortcut monitoring activated")
     
     def stop_monitor(self):
@@ -61,6 +77,8 @@ class ShortcutLighting:
             return
         
         self.currently_pressed_keys.add(key_name)
+        # Emit the key_pressed signal
+        self.key_pressed.emit(key_name)
         self.update_key_highlights()
     
     def handle_key_release(self, key_name):
@@ -70,6 +88,9 @@ class ShortcutLighting:
         
         if key_name in self.currently_pressed_keys:
             self.currently_pressed_keys.remove(key_name)
+        
+        # Emit the key_released signal
+        self.key_released.emit(key_name)
         
         # Only restore colors if no keys are pressed
         if not self.currently_pressed_keys:
@@ -87,6 +108,9 @@ class ShortcutLighting:
         # Don't update highlights too frequently (throttle)
         current_time = time.time()
         if current_time - self.last_highlight_update < self.highlight_refresh_rate:
+            self.update_pending = True
+            if self.batch_update_timer and not self.batch_update_timer.isActive():
+                self.batch_update_timer.start(int(self.highlight_refresh_rate * 1000))
             return
         
         self.last_highlight_update = current_time
@@ -104,6 +128,9 @@ class ShortcutLighting:
         
         # Create a list of colors for all keys (black by default)
         key_colors = [(0, 0, 0) for _ in range(len(self.keys))]
+        
+        # Check if the key colors would actually change
+        changed = False
         
         # Set colors for highlighted keys
         for key in self.keys:
@@ -124,19 +151,55 @@ class ShortcutLighting:
                     key_colors[key.index] = (self.default_highlight_color.red(), 
                                            self.default_highlight_color.green(), 
                                            self.default_highlight_color.blue())
+                
+                # Check if this color is different from the cache
+                if key.index not in self.key_color_cache or self.key_color_cache[key.index] != key_colors[key.index]:
+                    self.key_color_cache[key.index] = key_colors[key.index]
+                    changed = True
         
-        # Send the config directly to the keyboard
-        if self.keyboard.connected:
+        # Only send update if colors actually changed
+        if changed and self.keyboard.connected:
             self.keyboard.send_led_config(key_colors)
+            self.update_pending = False
+    
+    def apply_pending_updates(self):
+        """Apply any pending updates that were throttled"""
+        if self.update_pending:
+            self.update_pending = False
+            self.update_key_highlights()
     
     def restore_key_colors(self):
         """Restore to default lighting configuration"""
-        # Just load the default configuration
-        self.app.load_config(self.default_config_name)
-        
-        # If auto-reload is on, send the updated colors to the keyboard
-        if self.app.auto_reload and self.keyboard.connected:
-            self.app.send_config()
+        try:
+            # Just load the default configuration
+            self.app.load_config(self.default_config_name)
+            
+            # If auto-reload is on, send the updated colors to the keyboard
+            if self.app.auto_reload and self.keyboard.connected:
+                self.app.send_config()
+                
+            return True
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error restoring default configuration: {e}")
+            
+            # Try alternative approach if initial method fails
+            try:
+                # Try to directly load a default configuration if exists
+                configs = self.app.config_manager.get_config_list()
+                if "Default Green" in configs:
+                    self.app.load_config("Default Green")
+                elif len(configs) > 0:
+                    self.app.load_config(configs[0])
+                    
+                # Force send configuration to keyboard
+                if self.keyboard.connected:
+                    self.app.send_config()
+                return True
+            except Exception as inner_e:
+                logger.error(f"Failed fallback restore: {inner_e}")
+                return False
     
     def set_modifier_color(self, modifier, color):
         """Set a custom color for a specific modifier key"""
