@@ -134,10 +134,10 @@ class KeyboardController:
                     else:
                         # Get color from memory map
                         if color_idx < 126:
-                            # Fix: Use direct calculation without float-to-int conversion issues
-                            r = min(255, int(key_colors[color_idx*3] * intensity))
-                            g = min(255, int(key_colors[color_idx*3+1] * intensity))
-                            b = min(255, int(key_colors[color_idx*3+2] * intensity))
+                            # Fix: Use direct calculation with proper rounding and bounds checking
+                            r = min(255, max(0, int(key_colors[color_idx*3] * intensity)))
+                            g = min(255, max(0, int(key_colors[color_idx*3+1] * intensity)))
+                            b = min(255, max(0, int(key_colors[color_idx*3+2] * intensity)))
                             packet.extend([r, g, b])
                             color_idx += 1
                         else:
@@ -161,6 +161,7 @@ class KeyboardController:
             self.device.send_feature_report(packet)
             return True
         except Exception as e:
+            logger.error(f"Error sending feature report: {e}")
             self.disconnect()
             return False
     
@@ -181,10 +182,10 @@ class KeyboardController:
         # Apply intensity to colors
         adjusted_colors = []
         for r, g, b in key_colors:
-            # Scale the colors by intensity (0-255 * intensity)
-            adj_r = int(r * intensity)
-            adj_g = int(g * intensity)
-            adj_b = int(b * intensity)
+            # Scale the colors by intensity (0-255 * intensity) with proper bounds checking
+            adj_r = min(255, max(0, int(r * intensity)))
+            adj_g = min(255, max(0, int(g * intensity)))
+            adj_b = min(255, max(0, int(b * intensity)))
             adjusted_colors.append((adj_r, adj_g, adj_b))
         
         # Current key color index

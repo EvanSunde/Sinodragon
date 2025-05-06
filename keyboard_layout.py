@@ -19,7 +19,7 @@ from shortcut_lighting import ShortcutLighting
 from features.text_display import TextDisplayFeature
 from features.effects import EffectsFeature
 from features.system_monitor import SystemMonitorFeature
-from features.app_shortcuts import AppShortcutFeature
+from features.app_shortcuts import AppShortcutFeature, AppShortcutConfigManager
 
 # Define a key mapping between Qt key constants and our keyboard layout key names
 QT_KEY_MAP = {
@@ -101,6 +101,7 @@ class KeyButton(QPushButton):
         self.color = QColor(0, 255, 0)  # Default color: green
         self.setFixedSize(60, 60)
         self.selected = False
+        self.parent_app = parent  # Store the parent application reference correctly
         self.updateStyle()
         
     def setKeyColor(self, color):
@@ -118,6 +119,7 @@ class KeyButton(QPushButton):
         r, g, b = self.color.red(), self.color.green(), self.color.blue()
         text_color = "#000000" if (r + g + b) > 380 else "#FFFFFF"
         
+        # Make selection border more visible
         border = "3px solid #FFFFFF" if self.selected else "1px solid #222222"
         
         self.setStyleSheet(f"""
@@ -130,17 +132,18 @@ class KeyButton(QPushButton):
             }}
             QPushButton:hover {{
                 background-color: rgb({min(r+20, 255)}, {min(g+20, 255)}, {min(b+20, 255)});
-                border-width: 2px;
+                border-width: {4 if self.selected else 2}px;
             }}
         """)
 
     def mouseReleaseEvent(self, event):
-        """Handle mouse click event for a key"""
-        # Call the parent app's key click handler
-        self.parent.handle_key_click(self)
+        """Handle mouse release events on keys"""
+        # First call the parent class method
+        super().mouseReleaseEvent(event)
         
-        # Accept the event
-        event.accept()
+        # Directly call the parent application's handle_key_click method
+        if self.parent_app and hasattr(self.parent_app, 'handle_key_click'):
+            self.parent_app.handle_key_click(self)
 
 class ColorDisplay(QFrame):
     clicked = pyqtSignal()
@@ -196,8 +199,9 @@ class KeyboardConfigApp(QMainWindow):
         self.intensity_timer.setSingleShot(True)
         self.intensity_timer.timeout.connect(self.apply_intensity)
         
-        # Create the app shortcut feature
-        self.app_shortcuts = AppShortcutFeature(self)
+        # Create the app shortcut feature with dedicated config manager
+        self.app_shortcut_config = AppShortcutConfigManager(self.shortcut_manager.config_dir)
+        self.app_shortcuts = AppShortcutFeature(self.app_shortcut_config, self, self.shortcut_lighting)
         
         # Setup UI after shortcut_lighting is created
         self.setupUI()
@@ -428,6 +432,8 @@ class KeyboardConfigApp(QMainWindow):
         # Toggle selection mode
         self.selection_mode_toggle = QCheckBox("Selection Mode")
         self.selection_mode_toggle.toggled.connect(self.toggle_selection_mode)
+        # Initialize with a distinct appearance to make it more visible
+        self.selection_mode_toggle.setStyleSheet("QCheckBox { font-weight: bold; }")
         selection_layout.addWidget(self.selection_mode_toggle)
         
         # Selection controls
@@ -473,6 +479,10 @@ class KeyboardConfigApp(QMainWindow):
                     self.send_config()
         
         self.region_intensity_slider.valueChanged.connect(update_intensity)
+        
+        # Add slider and label to the layout
+        selection_brightness_layout.addWidget(self.region_intensity_slider)
+        selection_brightness_layout.addWidget(self.region_intensity_label)
         
         selection_controls.addLayout(selection_brightness_layout)
         
@@ -669,14 +679,23 @@ class KeyboardConfigApp(QMainWindow):
         # If in selection mode, add/remove from selection
         if self.selection_mode:
             if key in self.selected_keys:
+                # Deselect the key
                 self.selected_keys.remove(key)
                 key.setSelected(False)
             else:
+                # Select the key
                 self.selected_keys.append(key)
                 key.setSelected(True)
+                
+            # Update status bar with selection info
+            if self.selected_keys:
+                self.statusBar().showMessage(f"Selected {len(self.selected_keys)} keys")
+            else:
+                self.statusBar().showMessage("No keys selected")
         else:
             # Apply color to the clicked key
             key.setKeyColor(self.current_color)
+            self.statusBar().showMessage(f"Applied color to {key.key_name}")
             
             # Add this: If auto-reload is enabled, apply the config
             if self.auto_reload and self.keyboard.connected:
@@ -685,14 +704,24 @@ class KeyboardConfigApp(QMainWindow):
     def toggle_selection_mode(self, enabled):
         """Toggle between selection mode and normal color application mode"""
         self.selection_mode = enabled
-        if not enabled:
+        
+        # Update UI state based on selection mode
+        if enabled:
+            self.statusBar().showMessage("Selection mode enabled - click keys to select/deselect")
+            # Highlight the selection checkbox to make it more obvious
+            self.selection_mode_toggle.setStyleSheet("QCheckBox { color: blue; font-weight: bold; }")
+        else:
+            # Exit selection mode and clear all selections
             self.clear_selection()
+            self.statusBar().showMessage("Selection mode disabled")
+            self.selection_mode_toggle.setStyleSheet("")
     
     def clear_selection(self):
         """Clear all selected keys"""
         for key in self.selected_keys:
             key.setSelected(False)
         self.selected_keys = []
+        self.statusBar().showMessage("Selection cleared")
     
     def set_region_color(self):
         """Apply the current color to the selected region with the region's intensity"""
@@ -706,12 +735,13 @@ class KeyboardConfigApp(QMainWindow):
         for key in self.selected_keys:
             # Create a color with the current color's RGB values adjusted by intensity
             adjusted_color = QColor(
-                int(self.current_color.red() * intensity),
-                int(self.current_color.green() * intensity),
-                int(self.current_color.blue() * intensity)
+                min(255, int(self.current_color.red() * intensity)),
+                min(255, int(self.current_color.green() * intensity)),
+                min(255, int(self.current_color.blue() * intensity))
             )
             key.setKeyColor(adjusted_color)
         
+        # Update the keyboard if auto-reload is on
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
     
@@ -1832,14 +1862,23 @@ class KeyboardConfigApp(QMainWindow):
             if key in QT_KEY_MAP:
                 key_name = QT_KEY_MAP[key]
         
-        # IMPORTANT: First check if app-specific shortcut handling is enabled
+        # First check if app-specific shortcut handling is enabled
         if hasattr(self, 'app_shortcuts') and self.app_shortcut_toggle.isChecked():
+            # Check if this is a meta/super key (always allow)
+            is_meta_key = key_name.lower() in ["win", "meta", "super"]
+            
             # Try to handle with app-specific shortcuts first
             if self.app_shortcuts.handle_key_press(key_name):
                 # App-specific shortcuts handled it, do not continue to global shortcuts
                 return
+            
+            # Check if global shortcuts should be disabled for this app
+            if self.app_shortcuts.should_disable_global_shortcuts(key_name):
+                # Skip global shortcut handling except for meta/super keys
+                if not is_meta_key:
+                    return
         
-        # If not handled by app-specific shortcuts, use global shortcut lighting
+        # If not handled by app-specific shortcuts or is a meta key, use global shortcut lighting
         self.shortcut_lighting.handle_key_press(key_name)
 
     def handle_key_release(self, event):

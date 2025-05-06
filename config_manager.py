@@ -30,6 +30,7 @@ class ConfigManager:
         self.config_index = os.path.join(self.config_dir, "config_index.bin")
         self.config_list = []
         self.last_used = None
+        self.default_config_name = None  # Store the name of the default configuration
         
         # Load the config index
         self._load_config_index()
@@ -63,13 +64,20 @@ class ConfigManager:
         if os.path.exists(self.config_index):
             try:
                 with open(self.config_index, 'rb') as f:
-                    # Format: [count][last_used_len][last_used][name1_len][name1]...
+                    # Format: [count][last_used_len][last_used][default_len][default][name1_len][name1]...
                     count = struct.unpack('B', f.read(1))[0]
                     
                     # Read last used config name
                     last_used_len = struct.unpack('B', f.read(1))[0]
                     self.last_used = f.read(last_used_len).decode('utf-8')
                     
+                    # Read default config name
+                    default_len = struct.unpack('B', f.read(1))[0]
+                    if default_len > 0:
+                        self.default_config_name = f.read(default_len).decode('utf-8')
+                    else:
+                        self.default_config_name = None
+                        
                     # Read config names
                     self.config_list = []
                     for _ in range(count):
@@ -86,6 +94,7 @@ class ConfigManager:
         """Create initial config index with default config"""
         self.config_list = ["Default Green"]
         self.last_used = "Default Green"
+        self.default_config_name = "Default Green"
         self._save_config_index()
     
     def _save_config_index(self):
@@ -99,6 +108,12 @@ class ConfigManager:
                 last_used = self.last_used or "Default Green"
                 f.write(struct.pack('B', len(last_used)))
                 f.write(last_used.encode('utf-8'))
+                
+                # Write default config name
+                default_name = self.default_config_name or ""
+                f.write(struct.pack('B', len(default_name)))
+                if default_name:
+                    f.write(default_name.encode('utf-8'))
                 
                 # Write config names
                 for name in self.config_list:
@@ -131,10 +146,10 @@ class ConfigManager:
         }
     
     def load_config(self, config_name=None):
-        """Load a configuration by name or the last used one"""
-        # If no name specified, use last used
+        """Load a configuration by name, the last used one, or the default"""
+        # If no name specified, use last used or default
         if not config_name:
-            config_name = self.last_used
+            config_name = self.last_used or self.default_config_name or "Default Green"
         
         # Config path
         config_path = self._get_config_path(config_name)
@@ -187,7 +202,10 @@ class ConfigManager:
             
             except Exception as e:
                 logger.error(f"Error loading binary config: {e}")
-                # Fall back to default config
+                # Fall back to default config if specified
+                if self.default_config_name and config_name != self.default_config_name:
+                    logger.info(f"Falling back to default config: {self.default_config_name}")
+                    return self.load_config(self.default_config_name)
         
         # Try loading JSON format (legacy)
         try:
@@ -359,4 +377,84 @@ class ConfigManager:
                 buffer[i*3+1] = g   # G
                 buffer[i*3+2] = b   # B
         
-        return memoryview(buffer) 
+        return memoryview(buffer)
+
+    def set_default_config(self, config_name):
+        """Set a configuration as the default"""
+        if config_name not in self.config_list:
+            logger.error(f"Cannot set {config_name} as default: configuration does not exist")
+            return False
+        
+        self.default_config_name = config_name
+        logger.info(f"Set {config_name} as default configuration")
+        return self._save_config_index()
+
+    def get_default_config_name(self):
+        """Get the name of the default configuration"""
+        return self.default_config_name
+
+    def delete_config(self, config_name):
+        """Delete a configuration"""
+        if config_name not in self.config_list:
+            logger.error(f"Cannot delete {config_name}: configuration does not exist")
+            return False
+        
+        # Don't delete the last configuration
+        if len(self.config_list) <= 1:
+            logger.error("Cannot delete the only remaining configuration")
+            return False
+        
+        # Remove from config list
+        self.config_list.remove(config_name)
+        
+        # Update last_used if needed
+        if self.last_used == config_name:
+            self.last_used = self.config_list[0]
+        
+        # Update default if needed
+        if self.default_config_name == config_name:
+            self.default_config_name = self.config_list[0]
+        
+        # Delete the file
+        config_path = self._get_config_path(config_name)
+        try:
+            if os.path.exists(config_path):
+                os.remove(config_path)
+            
+            # Also remove from legacy format if it exists
+            self._remove_from_legacy_config(config_name)
+            
+            # Save updated index
+            self._save_config_index()
+            
+            logger.info(f"Deleted configuration: {config_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting configuration {config_name}: {e}")
+            return False
+
+    def _remove_from_legacy_config(self, config_name):
+        """Remove a configuration from the legacy JSON format"""
+        legacy_path = os.path.join(self.config_dir, "keyboard_config.json")
+        
+        if os.path.exists(legacy_path):
+            try:
+                with open(legacy_path, 'r') as f:
+                    configs = json.load(f)
+                
+                if config_name in configs:
+                    del configs[config_name]
+                    
+                    # Update last_used if needed
+                    if configs.get("last_used") == config_name:
+                        # Find another config to use
+                        for key in configs:
+                            if key != "last_used":
+                                configs["last_used"] = key
+                                break
+                
+                with open(legacy_path, 'w') as f:
+                    json.dump(configs, f)
+                
+            except Exception as e:
+                logger.error(f"Error removing from legacy config: {e}") 

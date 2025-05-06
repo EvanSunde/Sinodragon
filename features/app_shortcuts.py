@@ -42,43 +42,25 @@ class ColorDisplay(QFrame):
         self.clicked.emit()
         super().mousePressEvent(event)
 
-class AppShortcutFeature:
-    def __init__(self, keyboard_app):
-        """
-        Initialize the application-specific shortcut feature.
-        
-        Args:
-            keyboard_app: The main keyboard application instance
-        """
-        self.app = keyboard_app
-        self.keys = keyboard_app.keys
-        self.keyboard = keyboard_app.keyboard
-        self.shortcut_manager = keyboard_app.shortcut_manager
-        
-        # Get the config directory
-        self.config_dir = self.shortcut_manager.config_dir
+class AppShortcutConfigManager:
+    """Manages configuration for application-specific shortcuts"""
+    
+    def __init__(self, config_dir):
+        """Initialize the configuration manager"""
+        self.config_dir = config_dir
         self.app_shortcuts_dir = os.path.join(self.config_dir, "app_shortcuts")
         
         # Ensure app shortcuts directory exists
         os.makedirs(self.app_shortcuts_dir, exist_ok=True)
         
-        # State tracking
-        self.monitoring = False
-        self.monitor_thread = None
-        self.current_app = None
+        # Default configuration
         self.app_shortcuts = {}
         self.app_colors = {}
         self.default_color = QColor(255, 165, 0)  # Orange by default
         
-        # Store the default state for efficient restoration
-        self.default_state = []  # Will store RGB tuples for each key
-        
-        # CRITICAL FIX: Add our own key tracking
-        self._currently_pressed_keys = set()
-        
-        # Load any existing app shortcuts
+        # Load existing configuration
         self.load_app_shortcuts()
-        
+    
     def load_app_shortcuts(self):
         """Load all application shortcuts from the config directory"""
         self.app_shortcuts = {}
@@ -152,6 +134,100 @@ class AppShortcutFeature:
         except Exception as e:
             logger.error(f"Error saving application colors: {e}")
             return False
+
+class AppShortcutFeature:
+    def __init__(self, config_manager, keyboard, shortcut_lighting):
+        """Initialize with configuration and keyboard"""
+        super().__init__()
+        self.config_manager = config_manager
+        self.keyboard = keyboard
+        self.shortcut_lighting = shortcut_lighting
+        self.monitoring = False
+        self.monitor_thread = None
+        self.current_app = "Unknown"
+        
+        # For tracking keys and default state
+        self.default_state = []  # Will store RGB tuples for each key
+        self.disable_global_shortcuts = False
+        self._currently_pressed_keys = set()
+        
+        # Performance optimization
+        self._app_cache = {}  # Cache app-specific shortcut data for faster access
+        self._last_window_check = 0
+        self._window_check_interval = 0.5  # Check every 0.5 seconds at most
+        
+        # Hyprland-specific components
+        self.is_hyprland = os.environ.get('HYPRLAND_INSTANCE_SIGNATURE') is not None
+        self.hyprland_ipc = None
+        
+        # Signal connections - ensure we're handling possible compatibility issues
+        try:
+            # Connect to signals if they exist
+            if hasattr(self.shortcut_lighting, 'key_pressed'):
+                self.shortcut_lighting.key_pressed.connect(self.on_key_press)
+                logger.info("Connected to key_pressed signal")
+            
+            if hasattr(self.shortcut_lighting, 'key_released'):
+                self.shortcut_lighting.key_released.connect(self.on_key_release)
+                logger.info("Connected to key_released signal")
+        except Exception as e:
+            logger.error(f"Error connecting to shortcut lighting signals: {e}")
+            # We'll fall back to direct method calls if signals aren't available
+            logger.info("Will use direct method calls for key event handling")
+        
+        logger.info("App shortcut feature initialized")
+        
+        # Initialize cache for better performance
+        self._initialize_cache()
+        
+    @property
+    def default_color(self):
+        """Get the default highlight color from the config manager"""
+        return self.config_manager.default_color
+    
+    @property
+    def app_colors(self):
+        """Get the app colors dictionary from the config manager"""
+        return self.config_manager.app_colors
+        
+    @property
+    def app_shortcuts(self):
+        """Get the app shortcuts dictionary from the config manager"""
+        return self.config_manager.app_shortcuts
+    
+    @property
+    def app_shortcuts_dir(self):
+        """Get the app shortcuts directory from the config manager"""
+        return self.config_manager.app_shortcuts_dir
+    
+    def _initialize_cache(self):
+        """Initialize caches for better performance"""
+        # Cache frequently accessed keys to reduce lookups
+        self._app_cache = {}
+        
+        # Pre-cache existing app configurations
+        for app_name, shortcuts in self.config_manager.app_shortcuts.items():
+            self._app_cache[app_name] = {
+                'shortcuts': shortcuts,
+                'color': self.config_manager.app_colors.get(app_name, self.config_manager.default_color),
+                'has_default_keys': 'default_keys' in shortcuts and shortcuts['default_keys']
+            }
+        
+        logger.info(f"Initialized cache for {len(self._app_cache)} applications")
+    
+    def _update_app_cache(self, app_name):
+        """Update the cache for a specific app"""
+        if app_name not in self.config_manager.app_shortcuts:
+            if app_name in self._app_cache:
+                del self._app_cache[app_name]
+            return
+            
+        shortcuts = self.config_manager.app_shortcuts[app_name]
+        self._app_cache[app_name] = {
+            'shortcuts': shortcuts,
+            'color': self.config_manager.app_colors.get(app_name, self.config_manager.default_color),
+            'has_default_keys': 'default_keys' in shortcuts and shortcuts['default_keys']
+        }
     
     def get_active_window_name(self):
         """Get the class name of the active window using appropriate window manager command"""
@@ -195,6 +271,9 @@ class AppShortcutFeature:
         )
         self.monitor_thread.start()
         
+        # Enable app-specific shortcuts
+        self.disable_global_shortcuts = True
+        
         logger.info("Application shortcut monitoring started")
     
     def stop_monitoring(self):
@@ -204,10 +283,13 @@ class AppShortcutFeature:
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=1.0)
             
+        # Re-enable global shortcuts
+        self.disable_global_shortcuts = False
+        
         logger.info("Application shortcut monitoring stopped")
         
         # Restore default keyboard appearance
-        self.app.shortcut_lighting.restore_key_colors()
+        self.shortcut_lighting.restore_key_colors()
     
     def _monitoring_loop(self):
         """Background thread to monitor active application and update shortcuts"""
@@ -215,9 +297,9 @@ class AppShortcutFeature:
         
         while self.monitoring:
             try:
-                # Only check for app changes every 1 second to reduce CPU usage
+                # Only check for app changes periodically to reduce CPU usage
                 current_time = time.time()
-                if current_time - last_check_time < 1.0:
+                if current_time - last_check_time < self._window_check_interval:
                     time.sleep(0.1)
                     continue
                     
@@ -242,13 +324,29 @@ class AppShortcutFeature:
     def apply_app_shortcuts(self, app_name):
         """Apply application-specific shortcuts to the keyboard"""
         try:
-            # If we don't have specific shortcuts for this app, use defaults
-            if app_name not in self.app_shortcuts:
-                # Just display the application name on the keyboard for visual feedback
-                logger.info(f"No shortcuts defined for {app_name}, using default behavior")
-                
-                # Restore to default configuration and save this as our default state
-                self.app.shortcut_lighting.restore_key_colors()
+            # Update app cache if needed
+            if app_name not in self._app_cache:
+                if app_name in self.config_manager.app_shortcuts:
+                    self._update_app_cache(app_name)
+                else:
+                    # Just display the application name on the keyboard for visual feedback
+                    logger.info(f"No shortcuts defined for {app_name}, using default behavior")
+                    
+                    # Restore to default configuration and save this as our default state
+                    self.shortcut_lighting.restore_key_colors()
+                    self.save_default_state()
+                    return
+            
+            # Get from cache for better performance
+            cache_entry = self._app_cache[app_name]
+            shortcuts = cache_entry['shortcuts']
+            has_default_keys = cache_entry['has_default_keys']
+            
+            # Check if this app has any useful settings
+            if not has_default_keys and not any(k for k in shortcuts.keys() if k != "default_keys"):
+                # App exists but has no useful shortcuts defined - use global defaults
+                logger.info(f"App {app_name} has no useful shortcuts, using global defaults")
+                self.shortcut_lighting.restore_key_colors()
                 self.save_default_state()
                 return
                 
@@ -260,8 +358,10 @@ class AppShortcutFeature:
             # In case of error, try to restore to default state
             try:
                 self.restore_default_state()
-            except:
-                pass
+            except Exception as inner_e:
+                logger.error(f"Error restoring default state: {inner_e}")
+                # Last resort fallback
+                self.shortcut_lighting.restore_key_colors()
     
     def _safely_display_app_name(self, app_name):
         """Safely display app name with proper error handling"""
@@ -272,7 +372,7 @@ class AppShortcutFeature:
             
             # Clear keyboard with error handling
             try:
-                self.app.clear_keyboard()
+                self.keyboard.clear_keyboard()
             except Exception as e:
                 logger.error(f"Error clearing keyboard: {e}")
                 return
@@ -280,14 +380,14 @@ class AppShortcutFeature:
             # Display app name for a brief moment
             try:
                 short_name = app_name[:8] if app_name else "Unknown"
-                self.app.text_display.display_text(short_name, clear_first=True)
+                self.keyboard.text_display.display_text(short_name, clear_first=True)
                 
                 # After a brief delay, restore to default config
-                QTimer.singleShot(1000, self.app.shortcut_lighting.restore_key_colors)
+                QTimer.singleShot(1000, self.shortcut_lighting.restore_key_colors)
             except Exception as e:
                 logger.error(f"Error displaying app name: {e}")
                 # Try to restore default state
-                QTimer.singleShot(0, self.app.shortcut_lighting.restore_key_colors)
+                QTimer.singleShot(0, self.shortcut_lighting.restore_key_colors)
         except Exception as e:
             logger.error(f"Unexpected error in _safely_display_app_name: {e}")
     
@@ -295,13 +395,13 @@ class AppShortcutFeature:
         """Apply shortcuts specific to an application with proper error handling"""
         try:
             # Clear keyboard first
-            self.app.clear_keyboard()
+            self.keyboard.clear_keyboard()
             
             # Get app-specific color or use default
-            highlight_color = self.app_colors.get(app_name, self.default_color)
+            highlight_color = self._app_cache[app_name]['color']
             
             # Get the shortcuts for this app
-            shortcuts = self.app_shortcuts[app_name]
+            shortcuts = self._app_cache[app_name]['shortcuts']
             
             # Check if we should apply default keys highlighting
             if "default_keys" in shortcuts and shortcuts["default_keys"]:
@@ -313,34 +413,56 @@ class AppShortcutFeature:
             
             # CRITICAL FIX: Create a list of RGB tuples for all keys
             color_list = []
-            for key in self.app.keys:
+            for key in self.keyboard.keys:
                 # Fix: Access the color attribute directly instead of calling keyColor()
                 color = key.color
                 color_list.append((color.red(), color.green(), color.blue()))
             
             # Send the color list directly to the keyboard controller
-            if self.app.keyboard.connected:
+            if self.keyboard.keyboard.connected:
                 logger.info(f"Sending highlighted configuration to keyboard")
                 # Use the direct send_led_config method instead of app.send_config()
-                self.app.keyboard.send_led_config(color_list)
+                self.keyboard.keyboard.send_led_config(color_list)
             else:
                 logger.warning("Keyboard not connected, can't update LEDs")
         except Exception as e:
             logger.error(f"Error highlighting keys for {app_name}: {e}", exc_info=True)
             # Try to restore default state
-            self.app.shortcut_lighting.restore_key_colors()
+            self.shortcut_lighting.restore_key_colors()
     
     def _highlight_key(self, key_name, color):
-        """Highlight a specific key with the given color"""
-        for key in self.app.keys:
-            if key.key_name.lower() == key_name.lower():
+        """
+        Highlight a specific key with the given color
+        
+        Args:
+            key_name: Name of the key to highlight
+            color: QColor to use for highlighting
+            
+        Returns:
+            bool: True if key was found and highlighted, False otherwise
+        """
+        if not key_name or not isinstance(key_name, str):
+            logger.warning(f"Invalid key name: {key_name}")
+            return False
+            
+        # Normalize key name for comparison
+        normalized_key = key_name.strip().lower()
+        if not normalized_key:
+            return False
+            
+        # Search for matching key
+        for key in self.keyboard.keys:
+            if key.key_name.lower() == normalized_key:
                 logger.debug(f"Highlighting key {key_name} with color {color.name()}")
                 key.setKeyColor(color)
-                break
+                return True
+                
+        logger.debug(f"Key not found: {key_name}")
+        return False
     
     def show_app_shortcut_manager(self):
         """Show the application shortcut manager dialog"""
-        dialog = AppShortcutManagerDialog(self.app, self)
+        dialog = AppShortcutManagerDialog(self.keyboard, self)
         dialog.exec_()
 
     def handle_key_press(self, key_name):
@@ -349,13 +471,16 @@ class AppShortcutFeature:
             logger.info(f"App shortcuts not monitoring or no current app")
             return False  # Return False to allow global handling
         
-        if self.current_app not in self.app_shortcuts:
+        if self.current_app not in self._app_cache:
             logger.info(f"No shortcuts defined for current app: {self.current_app}")
             return False  # Return False to allow global handling
         
         try:
+            # Add this key to our own tracking
+            self._currently_pressed_keys.add(key_name)
+            
             # Get the list of currently pressed modifier keys from the global shortcut system
-            pressed_modifiers = list(self.app.shortcut_lighting.currently_pressed_keys)
+            pressed_modifiers = list(self.shortcut_lighting.currently_pressed_keys)
             logger.info(f"App shortcuts handling key press: {key_name}")
             logger.info(f"Currently pressed keys from global system: {pressed_modifiers}")
             
@@ -377,7 +502,7 @@ class AppShortcutFeature:
                 logger.info(f"Looking for shortcuts with modifier key: {modifiers_key}")
                 
                 # Check if we have this modifier combination for the current app
-                shortcuts = self.app_shortcuts[self.current_app]
+                shortcuts = self._app_cache[self.current_app]['shortcuts']
                 
                 # Try exact match first
                 if modifiers_key in shortcuts:
@@ -395,14 +520,18 @@ class AppShortcutFeature:
             
             # If we get here, no modifier-specific shortcuts were found
             # Check if we should apply default keys
-            if "default_keys" in self.app_shortcuts[self.current_app]:
+            if "default_keys" in self._app_cache[self.current_app]['shortcuts']:
+                # Save the keyboard state first if needed - only on the first modifier press
+                if not self.default_state:
+                    self.save_default_state()
+                    
                 # If modifiers are pressed but we don't have specific shortcuts for them,
                 # still highlight the default keys
                 logger.info(f"No specific shortcuts for modifiers, using default keys")
-                self._highlight_app_shortcut_keys("default", self.app_shortcuts[self.current_app]["default_keys"])
+                self._highlight_app_shortcut_keys("default", self._app_cache[self.current_app]['shortcuts']["default_keys"])
                 return True
             
-            logger.debug(f"No modifier shortcuts found for {key_name} in {self.current_app}")
+            logger.debug(f"No shortcuts found for {key_name} in {self.current_app}")
             return False  # Let global shortcuts handle it
         except Exception as e:
             logger.error(f"Error handling key press: {e}", exc_info=True)
@@ -411,12 +540,28 @@ class AppShortcutFeature:
     def _highlight_app_shortcut_keys(self, modifier_key, keys_to_highlight):
         """Highlight specific keys for an application shortcut"""
         try:
+            # Validate input
+            if not keys_to_highlight or not isinstance(keys_to_highlight, list):
+                logger.warning(f"Empty or invalid keys_to_highlight: {keys_to_highlight}")
+                # Fall back to global defaults if keys list is empty or invalid
+                self.shortcut_lighting.restore_key_colors()
+                return
+                
             # Clear keyboard first
-            self.app.clear_keyboard()
+            self.keyboard.clear_keyboard()
             
             # Get app-specific color
-            highlight_color = self.app_colors.get(self.current_app, self.default_color)
+            highlight_color = self._app_cache[self.current_app]['color']
             
+            # Convert any string keys to string and strip whitespace
+            keys_to_highlight = [str(k).strip() for k in keys_to_highlight if k]
+            
+            # If we still have no valid keys, fall back to global defaults
+            if not keys_to_highlight:
+                logger.warning(f"No valid keys to highlight for {modifier_key} in {self.current_app}")
+                self.shortcut_lighting.restore_key_colors()
+                return
+                
             # Highlight modifier keys if this isn't the default keySet
             if modifier_key != "default":
                 modifiers = modifier_key.split("+")
@@ -430,68 +575,78 @@ class AppShortcutFeature:
                     else: mod_name = modifier
                     
                     # Get the color for this modifier
-                    mod_color = self.app.shortcut_lighting.get_modifier_color(mod_name)
+                    mod_color = self.shortcut_lighting.get_modifier_color(mod_name)
                     logger.info(f"Highlighting modifier key {mod_name} with color {mod_color.name()}")
                     self._highlight_key(mod_name, mod_color)
             
             # Highlight the specified keys
+            keys_highlighted = 0
             for key in keys_to_highlight:
-                logger.info(f"Highlighting key {key} with color {highlight_color.name()}")
-                self._highlight_key(key, highlight_color)
+                if key and isinstance(key, str):
+                    logger.info(f"Highlighting key {key} with color {highlight_color.name()}")
+                    if self._highlight_key(key, highlight_color):
+                        keys_highlighted += 1
+            
+            logger.info(f"Successfully highlighted {keys_highlighted} out of {len(keys_to_highlight)} keys")
             
             # CRITICAL FIX: Create a list of RGB tuples for all keys
             color_list = []
-            for key in self.app.keys:
+            for key in self.keyboard.keys:
                 # Fix: Access the color attribute directly instead of calling keyColor()
                 color = key.color
                 color_list.append((color.red(), color.green(), color.blue()))
             
             # Send the color list directly to the keyboard controller
-            if self.app.keyboard.connected:
+            if self.keyboard.keyboard.connected:
                 # Use the direct send_led_config method instead of app.send_config()
-                self.app.keyboard.send_led_config(color_list)
+                self.keyboard.keyboard.send_led_config(color_list)
                 logger.info(f"Sent app-specific shortcut highlights to keyboard for modifier {modifier_key}")
             else:
                 logger.warning("Keyboard not connected, can't update LEDs")
+                
         except Exception as e:
             logger.error(f"Error highlighting app shortcut keys: {e}", exc_info=True)
+            # Fall back to global defaults in case of error
+            self.shortcut_lighting.restore_key_colors()
 
     def highlight_default_keys(self):
-        """Immediately highlight the default keys for the current application"""
-        if not self.monitoring or not self.current_app:
-            return
-        
-        if self.current_app not in self.app_shortcuts:
-            return
-        
-        # Get the shortcuts for this app
-        shortcuts = self.app_shortcuts[self.current_app]
-        
-        # Check if we have default keys
-        if "default_keys" in shortcuts and shortcuts["default_keys"]:
-            logger.info(f"Highlighting default keys for {self.current_app}")
+        """Highlight default keys for current app"""
+        try:
+            if not self.monitoring or not self.current_app:
+                logger.info("Not monitoring or no current app, skipping default key highlighting")
+                return False
+                
+            if self.current_app not in self._app_cache:
+                logger.info(f"No shortcuts defined for {self.current_app}, loading global default config")
+                # Fall back to global default configuration
+                self.shortcut_lighting.restore_key_colors()
+                return False
             
-            # Clear the keyboard first
-            self.app.clear_keyboard()
+            # Save current keyboard state as default first if not saved already
+            if not self.default_state:
+                logger.info("Saving current keyboard state as default")
+                self.save_default_state()
+                
+            # Check if app has valid default keys
+            shortcuts = self._app_cache[self.current_app]['shortcuts']
+            has_default_keys = self._app_cache[self.current_app]['has_default_keys']
             
-            # Get app-specific color
-            highlight_color = self.app_colors.get(self.current_app, self.default_color)
-            
-            # Highlight all default keys
-            for key_name in shortcuts["default_keys"]:
-                self._highlight_key(key_name, highlight_color)
-            
-            # Convert to color list and send directly to keyboard
-            color_list = []
-            for key in self.app.keys:
-                # Fix: Access the color attribute directly instead of calling keyColor()
-                color = key.color
-                color_list.append((color.red(), color.green(), color.blue()))
-            
-            # Send the color list directly to the keyboard controller
-            if self.app.keyboard.connected:
-                self.app.keyboard.send_led_config(color_list)
-                logger.info(f"Sent default key highlights to keyboard for {self.current_app}")
+            if has_default_keys:
+                # Apply app-specific default keys
+                logger.info(f"Highlighting default keys for {self.current_app}")
+                self._highlight_app_shortcut_keys("default", shortcuts["default_keys"])
+                return True
+            else:
+                # No default keys defined for this app - fall back to global default
+                logger.info(f"No default keys for {self.current_app}, loading global default config")
+                self.shortcut_lighting.restore_key_colors()
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error highlighting default keys: {e}", exc_info=True)
+            # Always fall back to global defaults in case of error
+            self.shortcut_lighting.restore_key_colors()
+            return False
 
     def _track_key_press(self, key_name):
         """Track a key press in our own system"""
@@ -501,47 +656,142 @@ class AppShortcutFeature:
     def handle_key_release(self, key_name):
         """Handle a key release event"""
         try:
+            # Remove key from our own tracking
+            if key_name in self._currently_pressed_keys:
+                self._currently_pressed_keys.remove(key_name)
+                
             # Check if any modifiers are still pressed in the global system
-            pressed_modifiers = list(self.app.shortcut_lighting.currently_pressed_keys)
+            pressed_modifiers = list(self.shortcut_lighting.currently_pressed_keys)
             real_modifiers = [mod for mod in pressed_modifiers if mod.lower() in ["ctrl", "shift", "alt", "win", "fn"]]
             
-            # If no modifiers are pressed, restore default keys for current app
-            if not real_modifiers and self.current_app and self.current_app in self.app_shortcuts:
-                # Check if we have default keys
-                if "default_keys" in self.app_shortcuts[self.current_app]:
-                    logger.info(f"All modifier keys released, restoring default keys for {self.current_app}")
-                    self._highlight_app_shortcut_keys("default", self.app_shortcuts[self.current_app]["default_keys"])
-                    return True
+            # Only restore defaults if no modifiers are pressed
+            if not real_modifiers:
+                if self.current_app and self.current_app in self._app_cache:
+                    shortcuts = self._app_cache[self.current_app]['shortcuts']
+                    has_default_keys = self._app_cache[self.current_app]['has_default_keys']
+                    
+                    if has_default_keys:
+                        # App has default keys - restore them
+                        logger.info(f"All modifier keys released, restoring default keys for {self.current_app}")
+                        self._highlight_app_shortcut_keys("default", shortcuts["default_keys"])
+                        return True
+                    else:
+                        # No default keys for this app - restore to global default or saved state
+                        logger.info(f"All modifier keys released, no default keys for {self.current_app}")
+                        if self.default_state and len(self.default_state) > 0:
+                            # Restore to saved default state if available
+                            logger.info("Restoring to saved default state")
+                            self.restore_default_state()
+                        else:
+                            # Fall back to global default
+                            logger.info("Restoring to global default config")
+                            self.shortcut_lighting.restore_key_colors()
+                        return True
                 else:
-                    # No default keys, restore to saved default state
-                    self.restore_default_state()
+                    # No app-specific shortcuts - restore global defaults
+                    logger.info("All modifier keys released, restoring to global default")
+                    self.shortcut_lighting.restore_key_colors()
                     return True
             
+            # If modifiers are still pressed, let the system handle it
             return False
+            
         except Exception as e:
             logger.error(f"Error handling key release: {e}", exc_info=True)
+            # In case of error, restore to global defaults
+            self.shortcut_lighting.restore_key_colors()
             return False
 
     def save_default_state(self):
         """Save the current keyboard state as the default state"""
         self.default_state = []
-        for key in self.app.keys:
+        for key in self.keyboard.keys:
             color = key.color
             self.default_state.append((color.red(), color.green(), color.blue()))
         logger.debug("Saved default keyboard state")
 
     def restore_default_state(self):
         """Restore the keyboard to the saved default state"""
-        if not self.default_state:
-            # If no default state is saved, use the app's restore method
-            logger.debug("No default state saved, using global restore")
-            self.app.shortcut_lighting.restore_key_colors()
-            return
+        try:
+            if not self.default_state or len(self.default_state) == 0:
+                # If no default state is saved, use the app's restore method
+                logger.debug("No default state saved, using global restore")
+                self.shortcut_lighting.restore_key_colors()
+                return
+            
+            # Clear the keyboard first to avoid visual artifacts
+            self.keyboard.clear_keyboard()
+            
+            # Apply the saved default state directly
+            logger.debug("Applying saved default state to keys")
+            
+            # Apply default state to the keys in the UI
+            for i, key in enumerate(self.keyboard.keys):
+                if i < len(self.default_state):
+                    r, g, b = self.default_state[i]
+                    key.setKeyColor(QColor(r, g, b))
+            
+            # Send to keyboard
+            if self.keyboard.keyboard.connected:
+                self.keyboard.keyboard.send_led_config(self.default_state)
+                logger.debug("Restored keyboard to default state")
+        except Exception as e:
+            logger.error(f"Error restoring default state: {e}", exc_info=True)
+            # Fall back to global restore
+            self.shortcut_lighting.restore_key_colors()
+
+    def should_disable_global_shortcuts(self, key_name=None):
+        """
+        Check if global shortcuts should be disabled for the current app
         
-        # Apply the saved default state directly
-        if self.app.keyboard.connected:
-            self.app.keyboard.send_led_config(self.default_state)
-            logger.debug("Restored keyboard to default state")
+        Args:
+            key_name: Optional key name to check (for meta/super key exception)
+            
+        Returns:
+            True if global shortcuts should be disabled, False otherwise
+        """
+        # Always allow meta/super key shortcuts
+        if key_name and key_name.lower() in ["win", "meta", "super"]:
+            return False
+        
+        # If we're not monitoring or don't have a current app, don't disable global shortcuts
+        if not self.monitoring or not self.current_app:
+            return False
+        
+        # If we don't have shortcuts for this app, don't disable global shortcuts
+        if self.current_app not in self._app_cache:
+            return False
+        
+        # If we have app-specific shortcuts, disable global shortcuts
+        return self.disable_global_shortcuts
+
+    def on_key_press(self, key_name):
+        """Handle key press signal from shortcut lighting system"""
+        return self.handle_key_press(key_name)
+    
+    def on_key_release(self, key_name):
+        """Handle key release signal from shortcut lighting system"""
+        return self.handle_key_release(key_name)
+
+    def save_app_shortcuts(self, app_name, shortcut_data):
+        """
+        Save shortcuts for a specific application by delegating to config manager
+        
+        Args:
+            app_name: Name of the application
+            shortcut_data: Dictionary with modifiers as keys and lists of keys as values
+        """
+        result = self.config_manager.save_app_shortcuts(app_name, shortcut_data)
+        
+        # Update the cache
+        if result and app_name in self.config_manager.app_shortcuts:
+            self._update_app_cache(app_name)
+            
+        return result
+    
+    def save_app_colors(self):
+        """Save application highlight colors by delegating to config manager"""
+        return self.config_manager.save_app_colors()
 
 class AppShortcutManagerDialog(QDialog):
     def __init__(self, keyboard_app, feature):
@@ -837,6 +1087,7 @@ class AppShortcutManagerDialog(QDialog):
                 file_path = os.path.join(self.feature.app_shortcuts_dir, f"{app_name}.json")
                 if os.path.exists(file_path):
                     os.remove(file_path)
+                logger.info(f"Removed app shortcut file for {app_name}")
             except Exception as e:
                 logger.error(f"Error removing app shortcut file: {e}")
             
@@ -845,6 +1096,8 @@ class AppShortcutManagerDialog(QDialog):
             
             # Refresh list
             self.load_app_list()
+            
+            QMessageBox.information(self, "Removed", f"Shortcuts for '{app_name}' have been removed")
 
 
 class ShortcutEditorDialog(QDialog):
@@ -888,3 +1141,161 @@ class ShortcutEditorDialog(QDialog):
         button_layout.addWidget(cancel_button)
         
         layout.addLayout(button_layout) 
+
+class HyprlandIPC:
+    def __init__(self, callback):
+        """
+        Initialize Hyprland IPC client
+        
+        Args:
+            callback: Function to call when active window changes
+        """
+        self.callback = callback
+        self.socket_path = None
+        self.socket = None
+        self.running = False
+        self.thread = None
+        self.last_window = "Unknown"
+        
+        # Memory optimization - use system buffer size
+        self.buffer_size = 4096
+        
+        # Get socket path from environment
+        instance_signature = os.environ.get('HYPRLAND_INSTANCE_SIGNATURE')
+        if instance_signature:
+            self.socket_path = f"/tmp/hypr/{instance_signature}/.socket2.sock"
+        
+    def start(self):
+        """Start monitoring Hyprland events"""
+        if not self.socket_path:
+            logger.error("Hyprland socket path not available")
+            return False
+            
+        self.running = True
+        self.thread = threading.Thread(target=self._event_loop, daemon=True)
+        self.thread.start()
+        return True
+    
+    def stop(self):
+        """Stop monitoring Hyprland events"""
+        self.running = False
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+        
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+    
+    def _event_loop(self):
+        """Event loop listening for Hyprland window change events"""
+        import socket
+        reconnect_delay = 1.0  # Initial reconnect delay
+        
+        while self.running:
+            try:
+                # Create and connect socket
+                self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.socket.connect(self.socket_path)
+                self.socket.settimeout(1.0)  # Add timeout to prevent blocking
+                
+                logger.info("Connected to Hyprland socket")
+                reconnect_delay = 1.0  # Reset delay after successful connection
+                
+                # Process events
+                buffer = ""
+                while self.running:
+                    try:
+                        data = self.socket.recv(self.buffer_size).decode('utf-8')
+                        if not data:
+                            break
+                            
+                        buffer += data
+                        
+                        # Process complete lines
+                        while '\n' in buffer:
+                            line, buffer = buffer.split('\n', 1)
+                            
+                            # Only process active window events
+                            if line.startswith("activewindow>>"):
+                                self._handle_window_event(line)
+                    except socket.timeout:
+                        # Just a timeout, continue to allow checking if we're still supposed to run
+                        continue
+                    except (socket.error, ConnectionRefusedError) as e:
+                        logger.error(f"Socket error during receive: {e}")
+                        break
+                
+                # If we reach here, the socket was closed
+                logger.warning("Hyprland socket closed, reconnecting...")
+                time.sleep(reconnect_delay)
+                
+            except (socket.error, ConnectionRefusedError) as e:
+                logger.error(f"Socket error: {e}, retrying in {reconnect_delay} seconds")
+                time.sleep(reconnect_delay)
+                # Exponential backoff with a maximum delay of 30 seconds
+                reconnect_delay = min(30.0, reconnect_delay * 1.5)
+                
+            finally:
+                # Ensure socket is closed before reconnect attempt
+                if self.socket:
+                    try:
+                        self.socket.close()
+                    except:
+                        pass
+                    self.socket = None
+    
+    def _handle_window_event(self, event_line):
+        """Process window change events"""
+        try:
+            # Parse the active window info
+            parts = event_line.split('>>', 1)[1].strip()
+            
+            # Skip empty events
+            if not parts or parts == ",":
+                return
+                
+            # Extract class name
+            app_class = parts.split(',')[0]
+            
+            # Skip if same as last window to avoid redundant processing
+            if app_class == self.last_window:
+                return
+                
+            self.last_window = app_class
+            
+            # Only call back if we have a valid class
+            if app_class and app_class != "":
+                self.callback(app_class)
+                
+        except Exception as e:
+            logger.error(f"Error handling window event: {e}")
+    
+    def get_active_window(self):
+        """Get current active window using hyprctl command"""
+        try:
+            import json
+            import subprocess
+            
+            # Try JSON output first (more reliable parsing)
+            try:
+                # Use -j for JSON output
+                output = subprocess.check_output(["hyprctl", "-j", "activewindow"], text=True)
+                data = json.loads(output)
+                
+                if "class" in data:
+                    return data["class"]
+            except (json.JSONDecodeError, subprocess.CalledProcessError):
+                # Fallback to grep if JSON fails
+                cmd = "hyprctl activewindow | grep class | awk '{print $2}'"
+                try:
+                    result = subprocess.check_output(cmd, shell=True, text=True).strip()
+                    return result
+                except subprocess.CalledProcessError:
+                    pass
+        except Exception as e:
+            logger.error(f"Error getting active window: {e}")
+            
+        return "Unknown" 
