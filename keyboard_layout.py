@@ -19,6 +19,7 @@ from shortcut_lighting import ShortcutLighting
 from features.text_display import TextDisplayFeature
 from features.effects import EffectsFeature
 from features.system_monitor import SystemMonitorFeature
+from features.app_shortcuts import AppShortcutFeature
 
 # Define a key mapping between Qt key constants and our keyboard layout key names
 QT_KEY_MAP = {
@@ -194,6 +195,9 @@ class KeyboardConfigApp(QMainWindow):
         self.intensity_timer = QTimer()
         self.intensity_timer.setSingleShot(True)
         self.intensity_timer.timeout.connect(self.apply_intensity)
+        
+        # Create the app shortcut feature
+        self.app_shortcuts = AppShortcutFeature(self)
         
         # Setup UI after shortcut_lighting is created
         self.setupUI()
@@ -549,6 +553,25 @@ class KeyboardConfigApp(QMainWindow):
         # Add shortcut group to layout
         shortcut_group.setLayout(shortcut_layout)
         controls_panel.addWidget(shortcut_group)
+        
+        # After the shortcut group section, add a new group for app-specific shortcuts
+        app_shortcut_group = QGroupBox("Application Shortcuts")
+        app_shortcut_layout = QVBoxLayout()
+        
+        # Enable/disable app shortcut detection
+        self.app_shortcut_toggle = QPushButton("Enable App Shortcuts")
+        self.app_shortcut_toggle.setCheckable(True)
+        self.app_shortcut_toggle.clicked.connect(self.toggle_app_shortcuts)
+        app_shortcut_layout.addWidget(self.app_shortcut_toggle)
+        
+        # Manage app shortcuts button
+        manage_app_shortcuts_btn = QPushButton("Manage App Shortcuts")
+        manage_app_shortcuts_btn.clicked.connect(self.manage_app_shortcuts)
+        app_shortcut_layout.addWidget(manage_app_shortcuts_btn)
+        
+        # Add app shortcut group to layout
+        app_shortcut_group.setLayout(app_shortcut_layout)
+        controls_panel.addWidget(app_shortcut_group)
         
         # Create a group for effects
         effects_group = QGroupBox("Effects")
@@ -1774,4 +1797,80 @@ class KeyboardConfigApp(QMainWindow):
             self.keyboard.disconnect()
         
         # Exit the application
-        QApplication.instance().quit() 
+        QApplication.instance().quit()
+
+    def toggle_app_shortcuts(self):
+        """Toggle application-specific shortcut highlighting"""
+        if self.app_shortcut_toggle.isChecked():
+            self.app_shortcut_toggle.setText("Disable App Shortcuts")
+            self.app_shortcuts.start_monitoring()
+            
+            # Force immediate update of default keys
+            QTimer.singleShot(500, self.app_shortcuts.highlight_default_keys)
+            
+            self.statusBar().showMessage("Application shortcut monitoring enabled")
+        else:
+            self.app_shortcut_toggle.setText("Enable App Shortcuts")
+            self.app_shortcuts.stop_monitoring()
+            self.statusBar().showMessage("Application shortcut monitoring disabled")
+
+    def manage_app_shortcuts(self):
+        """Open the application shortcut manager dialog"""
+        self.app_shortcuts.show_app_shortcut_manager()
+
+    def handle_key_press(self, event):
+        """Handle key press events and highlight shortcuts if enabled"""
+        # Skip if shortcut monitoring is disabled
+        if not hasattr(self, 'shortcut_toggle') or not self.shortcut_toggle.isChecked():
+            return
+        
+        # Extract key name from event
+        key_name = event.text().upper()
+        if len(key_name) == 0 or ord(key_name[0]) < 32:
+            # Try to get key name from key constant
+            key = event.key()
+            if key in QT_KEY_MAP:
+                key_name = QT_KEY_MAP[key]
+        
+        # IMPORTANT: First check if app-specific shortcut handling is enabled
+        if hasattr(self, 'app_shortcuts') and self.app_shortcut_toggle.isChecked():
+            # Try to handle with app-specific shortcuts first
+            if self.app_shortcuts.handle_key_press(key_name):
+                # App-specific shortcuts handled it, do not continue to global shortcuts
+                return
+        
+        # If not handled by app-specific shortcuts, use global shortcut lighting
+        self.shortcut_lighting.handle_key_press(key_name)
+
+    def handle_key_release(self, event):
+        """Handle key release events for shortcuts"""
+        if not hasattr(self, 'shortcut_toggle') or not self.shortcut_toggle.isChecked():
+            return
+        
+        # Extract key name from event
+        key_name = event.text().upper()
+        if len(key_name) == 0 or ord(key_name[0]) < 32:
+            # Try to get key name from key constant
+            key = event.key()
+            if key in QT_KEY_MAP:
+                key_name = QT_KEY_MAP[key]
+        
+        # First check if app-specific shortcut handling is enabled
+        if hasattr(self, 'app_shortcuts') and self.app_shortcut_toggle.isChecked():
+            # Try to handle with app-specific shortcuts first
+            if self.app_shortcuts.handle_key_release(key_name):
+                # App-specific shortcuts handled it, do not continue to global shortcuts
+                return
+        
+        # If not handled by app-specific shortcuts, use global shortcut lighting
+        self.shortcut_lighting.handle_key_release(key_name)
+
+    def keyPressEvent(self, event):
+        """Handle key press events"""
+        super().keyPressEvent(event)
+        self.handle_key_press(event)
+
+    def keyReleaseEvent(self, event):
+        """Handle key release events"""
+        super().keyReleaseEvent(event)
+        self.handle_key_release(event) 
