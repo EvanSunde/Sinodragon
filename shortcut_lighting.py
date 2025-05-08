@@ -2,6 +2,9 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ShortcutLighting(QObject):
     # Define signals for key press/release events
@@ -101,71 +104,109 @@ class ShortcutLighting(QObject):
             self.update_key_highlights()
     
     def update_key_highlights(self):
-        """Update key highlighting based on currently pressed keys"""
-        if not self.currently_pressed_keys:
-            return
+        """
+        Highlight keys based on current state. Throttled to prevent excessive update.
         
-        # Don't update highlights too frequently (throttle)
+        This method is called both by handle_key_press and handle_key_release
+        to ensure we maintain key highlights for all relevant keys.
+        """
         current_time = time.time()
         if current_time - self.last_highlight_update < self.highlight_refresh_rate:
             self.update_pending = True
             if self.batch_update_timer and not self.batch_update_timer.isActive():
                 self.batch_update_timer.start(int(self.highlight_refresh_rate * 1000))
             return
-        
+
         self.last_highlight_update = current_time
+        self.update_pending = False
         
-        # Convert set to list for the shortcut manager
-        pressed_list = list(self.currently_pressed_keys)
+        # Convert the set of pressed keys to a list
+        pressed_keys = list(self.currently_pressed_keys)
+        logger.debug(f"Updating highlights for keys: {pressed_keys}")
         
-        # Get keys to highlight from shortcut manager
-        keys_to_highlight = self.shortcut_manager.get_keys_to_highlight(pressed_list)
+        # Create a list to hold all the keys that should be highlighted
+        keys_to_highlight = []
         
-        # Add the pressed modifier keys themselves to the highlight list
-        for mod_key in self.currently_pressed_keys:
-            if mod_key not in keys_to_highlight:
-                keys_to_highlight.append(mod_key)
+        # Get the keys to highlight from the shortcut manager
+        if pressed_keys:
+            try:
+                # Get keys from shortcut manager if any modifiers are pressed
+                keys_to_highlight = self.shortcut_manager.get_highlighted_keys(pressed_keys)
+                logger.debug(f"Keys to highlight from shortcut manager: {keys_to_highlight}")
+                
+                # Make sure modifiers themselves are always included
+                for key in pressed_keys:
+                    if key not in keys_to_highlight and key in ["Ctrl", "Shift", "Alt", "Win"]:
+                        keys_to_highlight.append(key)
+            except Exception as e:
+                logger.error(f"Error getting keys to highlight: {e}")
+                # If there's an error, just highlight the pressed modifiers
+                keys_to_highlight = [key for key in pressed_keys if key in ["Ctrl", "Shift", "Alt", "Win"]]
         
-        # Create a list of colors for all keys (black by default)
-        key_colors = [(0, 0, 0) for _ in range(len(self.keys))]
-        
-        # Check if the key colors would actually change
+        # Create list of default key colors
+        key_colors = []
         changed = False
+        use_mod_color = None
         
-        # Set colors for highlighted keys
-        for key in self.keys:
-            # Check if key name matches (case-insensitive)
-            if key.key_name.lower() in [k.lower() for k in keys_to_highlight]:
-                # Choose the appropriate color
-                color_found = False
+        # Initialize all keys to default color first
+        for i, key in enumerate(self.keys):
+            # Default to the default color
+            new_color = (0, 0, 0)  # Default to black
+            
+            # Check if any modifiers are pressed - get the proper color
+            for mod_key in ["Ctrl", "Shift", "Alt", "Win"]:
+                if mod_key in pressed_keys:
+                    use_mod_color = self.modifier_colors.get(mod_key, self.default_highlight_color)
+                    break
+                    
+            # For specific keys that need to be highlighted
+            color_found = False
+            for highlight_key in keys_to_highlight:
+                if highlight_key == key.key_name:
+                    # If it's a modifier and is pressed, use the modifier color
+                    if highlight_key in ["Ctrl", "Shift", "Alt", "Win"] and highlight_key in pressed_keys:
+                        new_color = use_mod_color
+                    # Otherwise use the highlighter color (or mod color if available)
+                    else:
+                        new_color = use_mod_color if use_mod_color else self.default_highlight_color
+                    color_found = True
+                    break
+            
+            # If color has changed, update it and mark as changed
+            if key.color != new_color:
+                key.setKeyColor(new_color)
+                changed = True
                 
-                # First check if it's a modifier key
-                for mod_name, mod_color in self.modifier_colors.items():
-                    if key.key_name.lower() == mod_name.lower() and mod_name in self.currently_pressed_keys:
-                        key_colors[key.index] = (mod_color.red(), mod_color.green(), mod_color.blue())
-                        color_found = True
-                        break
-                
-                # If not a modifier or no special color, use default
-                if not color_found:
-                    key_colors[key.index] = (self.default_highlight_color.red(), 
-                                           self.default_highlight_color.green(), 
-                                           self.default_highlight_color.blue())
-                
-                # Check if this color is different from the cache
-                if key.index not in self.key_color_cache or self.key_color_cache[key.index] != key_colors[key.index]:
-                    self.key_color_cache[key.index] = key_colors[key.index]
-                    changed = True
+            key_colors.append((new_color[0], new_color[1], new_color[2]))
         
         # Only send update if colors actually changed
-        if changed and self.keyboard.connected:
-            self.keyboard.send_led_config(key_colors)
-            self.update_pending = False
+        if changed:
+            try:
+                # Ensure valid color values before sending
+                safe_colors = []
+                for r, g, b in key_colors:
+                    safe_colors.append((
+                        max(0, min(255, int(r))),
+                        max(0, min(255, int(g))),
+                        max(0, min(255, int(b)))
+                    ))
+                
+                if self.keyboard.connected:
+                    logger.debug("Sending updated LED config to keyboard")
+                    self.keyboard.send_led_config(safe_colors)
+                else:
+                    logger.warning("Keyboard not connected, cannot update LEDs")
+            except Exception as e:
+                logger.error(f"Error sending LED config: {e}", exc_info=True)
+        else:
+            logger.debug("No color changes, skipping LED update")
     
     def apply_pending_updates(self):
-        """Apply any pending updates that were throttled"""
+        """
+        Apply any updates that were throttled due to update_interval
+        """
         if self.update_pending:
-            self.update_pending = False
+            logger.debug("Applying pending key highlight updates")
             self.update_key_highlights()
     
     def restore_key_colors(self):

@@ -60,7 +60,7 @@ class AppShortcutConfigManager:
         
         # Load existing configuration
         self.load_app_shortcuts()
-    
+        
     def load_app_shortcuts(self):
         """Load all application shortcuts from the config directory"""
         self.app_shortcuts = {}
@@ -538,7 +538,13 @@ class AppShortcutFeature:
             return False  # On error, fall back to global shortcuts
 
     def _highlight_app_shortcut_keys(self, modifier_key, keys_to_highlight):
-        """Highlight specific keys for an application shortcut"""
+        """
+        Highlight specific keys for an application shortcut
+        
+        Args:
+            modifier_key: String representing the modifier keys (e.g., "Ctrl", "Shift", "Ctrl+Alt")
+            keys_to_highlight: List of key names to highlight
+        """
         try:
             # Validate input
             if not keys_to_highlight or not isinstance(keys_to_highlight, list):
@@ -556,12 +562,29 @@ class AppShortcutFeature:
             # Convert any string keys to string and strip whitespace
             keys_to_highlight = [str(k).strip() for k in keys_to_highlight if k]
             
+            # Check if there are disabled keys for this app
+            shortcuts = self._app_cache[self.current_app]['shortcuts']
+            disabled_keys = []
+            if "disabled_keys" in shortcuts and shortcuts["disabled_keys"]:
+                disabled_keys = [k.lower() for k in shortcuts["disabled_keys"]]
+                logger.info(f"Found disabled keys for {self.current_app}: {disabled_keys}")
+            
+            # Filter out disabled keys
+            if disabled_keys:
+                original_count = len(keys_to_highlight)
+                keys_to_highlight = [k for k in keys_to_highlight if k.lower() not in disabled_keys]
+                if len(keys_to_highlight) < original_count:
+                    logger.info(f"Filtered out {original_count - len(keys_to_highlight)} disabled keys")
+            
             # If we still have no valid keys, fall back to global defaults
             if not keys_to_highlight:
                 logger.warning(f"No valid keys to highlight for {modifier_key} in {self.current_app}")
                 self.shortcut_lighting.restore_key_colors()
                 return
-                
+            
+            # Track how many keys we're highlighting
+            keys_highlighted = 0
+            
             # Highlight modifier keys if this isn't the default keySet
             if modifier_key != "default":
                 modifiers = modifier_key.split("+")
@@ -574,13 +597,18 @@ class AppShortcutFeature:
                     elif modifier.lower() == "fn": mod_name = "Fn"
                     else: mod_name = modifier
                     
+                    # Skip disabled modifier keys
+                    if mod_name.lower() in disabled_keys:
+                        logger.info(f"Skipping disabled modifier key: {mod_name}")
+                        continue
+                    
                     # Get the color for this modifier
                     mod_color = self.shortcut_lighting.get_modifier_color(mod_name)
                     logger.info(f"Highlighting modifier key {mod_name} with color {mod_color.name()}")
-                    self._highlight_key(mod_name, mod_color)
+                    if self._highlight_key(mod_name, mod_color):
+                        keys_highlighted += 1
             
             # Highlight the specified keys
-            keys_highlighted = 0
             for key in keys_to_highlight:
                 if key and isinstance(key, str):
                     logger.info(f"Highlighting key {key} with color {highlight_color.name()}")
@@ -589,33 +617,50 @@ class AppShortcutFeature:
             
             logger.info(f"Successfully highlighted {keys_highlighted} out of {len(keys_to_highlight)} keys")
             
-            # CRITICAL FIX: Create a list of RGB tuples for all keys
+            # IMPORTANT: Use a safe approach to send LEDs
+            # Create a list of RGB tuples for all keys
             color_list = []
             for key in self.keyboard.keys:
                 # Fix: Access the color attribute directly instead of calling keyColor()
                 color = key.color
                 color_list.append((color.red(), color.green(), color.blue()))
             
-            # Send the color list directly to the keyboard controller
+            # Ensure each color value is a valid integer in range 0-255
+            safe_colors = []
+            for r, g, b in color_list:
+                safe_colors.append((
+                    max(0, min(255, int(r))),
+                    max(0, min(255, int(g))),
+                    max(0, min(255, int(b)))
+                ))
+            
+            # Send the color list directly to the keyboard controller with proper exception handling
             if self.keyboard.keyboard.connected:
-                # Use the direct send_led_config method instead of app.send_config()
-                self.keyboard.keyboard.send_led_config(color_list)
-                logger.info(f"Sent app-specific shortcut highlights to keyboard for modifier {modifier_key}")
+                try:
+                    # Use the direct send_led_config method instead of app.send_config()
+                    logger.info(f"Sending app-specific shortcut highlights to keyboard for modifier {modifier_key}")
+                    self.keyboard.keyboard.send_led_config(safe_colors)
+                except Exception as e:
+                    logger.error(f"Error sending LED config: {e}")
+                    # Don't attempt to restore immediately - just log the error
             else:
                 logger.warning("Keyboard not connected, can't update LEDs")
                 
         except Exception as e:
             logger.error(f"Error highlighting app shortcut keys: {e}", exc_info=True)
-            # Fall back to global defaults in case of error
-            self.shortcut_lighting.restore_key_colors()
+            # Fall back to global defaults in case of error, with a slight delay
+            # to avoid potential packet conflicts
+            QTimer.singleShot(100, self.shortcut_lighting.restore_key_colors)
 
     def highlight_default_keys(self):
         """Highlight default keys for current app"""
         try:
+            # Check if we're monitoring and have a current app
             if not self.monitoring or not self.current_app:
                 logger.info("Not monitoring or no current app, skipping default key highlighting")
                 return False
                 
+            # Check if we have shortcuts for this app
             if self.current_app not in self._app_cache:
                 logger.info(f"No shortcuts defined for {self.current_app}, loading global default config")
                 # Fall back to global default configuration
@@ -641,7 +686,6 @@ class AppShortcutFeature:
                 logger.info(f"No default keys for {self.current_app}, loading global default config")
                 self.shortcut_lighting.restore_key_colors()
                 return False
-                
         except Exception as e:
             logger.error(f"Error highlighting default keys: {e}", exc_info=True)
             # Always fall back to global defaults in case of error
@@ -670,10 +714,20 @@ class AppShortcutFeature:
                     shortcuts = self._app_cache[self.current_app]['shortcuts']
                     has_default_keys = self._app_cache[self.current_app]['has_default_keys']
                     
+                    # Make sure we're still monitoring
+                    if not self.monitoring:
+                        return False
+                    
+                    # Use a slightly longer delay to let key handling complete
+                    # and avoid packet conflicts
+                    delay = 0.1  # 100ms delay
+                    
                     if has_default_keys:
                         # App has default keys - restore them
                         logger.info(f"All modifier keys released, restoring default keys for {self.current_app}")
-                        self._highlight_app_shortcut_keys("default", shortcuts["default_keys"])
+                        # Use a timer instead of a thread
+                        QTimer.singleShot(int(delay * 1000), 
+                            lambda: self._highlight_app_shortcut_keys("default", shortcuts["default_keys"]))
                         return True
                     else:
                         # No default keys for this app - restore to global default or saved state
@@ -681,16 +735,17 @@ class AppShortcutFeature:
                         if self.default_state and len(self.default_state) > 0:
                             # Restore to saved default state if available
                             logger.info("Restoring to saved default state")
-                            self.restore_default_state()
+                            QTimer.singleShot(int(delay * 1000), self.restore_default_state)
                         else:
                             # Fall back to global default
                             logger.info("Restoring to global default config")
-                            self.shortcut_lighting.restore_key_colors()
+                            QTimer.singleShot(int(delay * 1000), self.shortcut_lighting.restore_key_colors)
                         return True
                 else:
                     # No app-specific shortcuts - restore global defaults
                     logger.info("All modifier keys released, restoring to global default")
-                    self.shortcut_lighting.restore_key_colors()
+                    # Use a slightly longer delay
+                    QTimer.singleShot(100, self.shortcut_lighting.restore_key_colors)
                     return True
             
             # If modifiers are still pressed, let the system handle it
@@ -718,7 +773,7 @@ class AppShortcutFeature:
                 logger.debug("No default state saved, using global restore")
                 self.shortcut_lighting.restore_key_colors()
                 return
-            
+        
             # Clear the keyboard first to avoid visual artifacts
             self.keyboard.clear_keyboard()
             
@@ -734,7 +789,7 @@ class AppShortcutFeature:
             # Send to keyboard
             if self.keyboard.keyboard.connected:
                 self.keyboard.keyboard.send_led_config(self.default_state)
-                logger.debug("Restored keyboard to default state")
+            logger.debug("Restored keyboard to default state")
         except Exception as e:
             logger.error(f"Error restoring default state: {e}", exc_info=True)
             # Fall back to global restore
@@ -909,6 +964,27 @@ class AppShortcutManagerDialog(QDialog):
         ctrl_alt_layout.addWidget(self.ctrl_alt_keys_edit)
         app_details_layout.addWidget(ctrl_alt_group)
         
+        # Alt+Shift keys
+        alt_shift_group = QGroupBox("Alt+Shift Keys")
+        alt_shift_layout = QVBoxLayout(alt_shift_group)
+        self.alt_shift_keys_edit = QLineEdit()
+        self.alt_shift_keys_edit.setPlaceholderText("e.g., Tab,F4 (comma-separated)")
+        alt_shift_layout.addWidget(self.alt_shift_keys_edit)
+        app_details_layout.addWidget(alt_shift_group)
+        
+        # Disabled keys section
+        disabled_keys_group = QGroupBox("Disabled Keys")
+        disabled_keys_layout = QVBoxLayout(disabled_keys_group)
+        
+        # Help text
+        disabled_keys_layout.addWidget(QLabel("Keys that should not be highlighted in this app:"))
+        
+        self.disabled_keys_edit = QLineEdit()
+        self.disabled_keys_edit.setPlaceholderText("e.g., Esc,F1,F2 (comma-separated)")
+        disabled_keys_layout.addWidget(self.disabled_keys_edit)
+        
+        app_details_layout.addWidget(disabled_keys_group)
+        
         # Save button
         save_btn = QPushButton("Save Application")
         save_btn.clicked.connect(self.save_current_app)
@@ -950,6 +1026,8 @@ class AppShortcutManagerDialog(QDialog):
         self.alt_keys_edit.clear()
         self.ctrl_shift_keys_edit.clear()
         self.ctrl_alt_keys_edit.clear()
+        self.alt_shift_keys_edit.clear()
+        self.disabled_keys_edit.clear()
         
         # Set color if available
         if app_name in self.feature.app_colors:
@@ -986,6 +1064,13 @@ class AppShortcutManagerDialog(QDialog):
             
         if "Ctrl+Alt" in shortcuts:
             self.ctrl_alt_keys_edit.setText(",".join(shortcuts["Ctrl+Alt"]))
+        
+        if "Alt+Shift" in shortcuts:
+            self.alt_shift_keys_edit.setText(",".join(shortcuts["Alt+Shift"]))
+        
+        # Load disabled keys
+        if "disabled_keys" in shortcuts:
+            self.disabled_keys_edit.setText(",".join(shortcuts["disabled_keys"]))
     
     def save_current_app(self):
         """Save the current application configuration"""
@@ -1023,6 +1108,15 @@ class AppShortcutManagerDialog(QDialog):
         if ctrl_alt_keys_text:
             shortcuts["Ctrl+Alt"] = [k.strip() for k in ctrl_alt_keys_text.split(",")]
         
+        alt_shift_keys_text = self.alt_shift_keys_edit.text().strip()
+        if alt_shift_keys_text:
+            shortcuts["Alt+Shift"] = [k.strip() for k in alt_shift_keys_text.split(",")]
+        
+        # Get disabled keys
+        disabled_keys_text = self.disabled_keys_edit.text().strip()
+        if disabled_keys_text:
+            shortcuts["disabled_keys"] = [k.strip() for k in disabled_keys_text.split(",")]
+        
         # Save shortcuts
         self.feature.save_app_shortcuts(app_name, shortcuts)
         
@@ -1057,6 +1151,8 @@ class AppShortcutManagerDialog(QDialog):
         self.alt_keys_edit.clear()
         self.ctrl_shift_keys_edit.clear()
         self.ctrl_alt_keys_edit.clear()
+        self.alt_shift_keys_edit.clear()
+        self.disabled_keys_edit.clear()
     
     def remove_app(self):
         """Remove the selected application"""

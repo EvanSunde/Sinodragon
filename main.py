@@ -1,31 +1,20 @@
 #! /usr/bin/python3
 import sys
-import logging
-from PyQt5.QtWidgets import QApplication
-from keyboard_layout import KeyboardConfigApp
-from features.cli import CommandLineInterface
 import argparse
+from PyQt5.QtWidgets import QApplication
 
-# Configure logging with INFO level instead of DEBUG
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    filename='keyboard_app.log',  # Also save to file
-    filemode='a'  # Append to existing log
-)
+# Import utility functions
+from utils import setup_logging
 
-# Add console handler to show logs in console as well
-console = logging.StreamHandler()
-console.setLevel(logging.INFO)
-formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
-console.setFormatter(formatter)
-logging.getLogger('').addHandler(console)
-
-logger = logging.getLogger(__name__)
+# Import from new structure
+from ui.main_window import KeyboardConfigApp
+from features.cli import CommandLineInterface
 
 def main():
     """Main application entry point"""
+    # Set up logging
+    setup_logging(filename='keyboard_app.log')
+    
     # Parse specific arguments for the main app
     parser = argparse.ArgumentParser(description="Keyboard LED Configuration")
     parser.add_argument('--background', '-b', action='store_true', help='Start application in background mode')
@@ -61,6 +50,4 @@ def main():
         sys.exit(0)  # Exit after CLI operations complete
 
 if __name__ == "__main__":
-    logger.info("Starting Keyboard LED Configuration Application")
-    main()
-    logger.info("Application GUI initialized and shown") 
+    main() 
