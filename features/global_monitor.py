@@ -24,6 +24,19 @@ class GlobalMonitorFeature(QObject):
         self.global_listener = None
         self.global_keys_pressed = set()
         self.is_monitoring = False
+        self.app_monitoring_enabled = True  # Flag to control application event posting
+    
+    def enable_app_monitoring(self):
+        """Enable posting events to the parent application"""
+        self.app_monitoring_enabled = True
+        if self.parent_app and self.is_monitoring:
+            self.parent_app.statusBar().showMessage("Application event monitoring enabled")
+    
+    def disable_app_monitoring(self):
+        """Disable posting events to the parent application while keeping global monitoring active"""
+        self.app_monitoring_enabled = False
+        if self.parent_app and self.is_monitoring:
+            self.parent_app.statusBar().showMessage("Application event monitoring disabled (global monitoring still active)")
     
     def start_monitor(self):
         """Start global shortcut monitoring with Wayland compatibility"""
@@ -69,7 +82,8 @@ class GlobalMonitorFeature(QObject):
                         thread.start()
                     
                     if self.parent_app:
-                        self.parent_app.statusBar().showMessage(f"Monitoring {len(keyboards)} keyboard input devices")
+                        app_status = "with application events" if self.app_monitoring_enabled else "without application events"
+                        self.parent_app.statusBar().showMessage(f"Monitoring {len(keyboards)} keyboard input devices ({app_status})")
                     return True
                 
                 # Start evdev monitoring in a separate thread
@@ -113,24 +127,29 @@ class GlobalMonitorFeature(QObject):
                         key_name = modifier_key_map[keycode]
                         
                         if key_event.keystate == 1:  # Key down
-                            # Process in main thread to avoid race conditions
-                            if self.parent_app:
+                            # Always emit the signal (for global shortcut detection)
+                            self.key_pressed.emit(key_name)
+                            self.global_keys_pressed.add(key_name)
+                            
+                            # Process in main thread only if app monitoring is enabled
+                            if self.parent_app and self.app_monitoring_enabled:
                                 QApplication.instance().postEvent(
                                     self.parent_app, 
                                     CustomKeyEvent(CustomKeyEvent.KeyPress, key_name)
                                 )
-                            self.key_pressed.emit(key_name)
-                            self.global_keys_pressed.add(key_name)
                             
                         elif key_event.keystate == 0:  # Key up
-                            if self.parent_app:
+                            # Always emit the signal (for global shortcut detection)
+                            self.key_released.emit(key_name)
+                            if key_name in self.global_keys_pressed:
+                                self.global_keys_pressed.remove(key_name)
+                                
+                            # Process in main thread only if app monitoring is enabled
+                            if self.parent_app and self.app_monitoring_enabled:
                                 QApplication.instance().postEvent(
                                     self.parent_app, 
                                     CustomKeyEvent(CustomKeyEvent.KeyRelease, key_name)
                                 )
-                            self.key_released.emit(key_name)
-                            if key_name in self.global_keys_pressed:
-                                self.global_keys_pressed.remove(key_name)
         
         except Exception as e:
             print(f"Evdev monitor error: {e}")
@@ -190,11 +209,11 @@ class GlobalMonitorFeature(QObject):
                         # If this is a new key press, process it
                         if key_name not in self.global_keys_pressed:
                             self.global_keys_pressed.add(key_name)
-                            # Emit signal
+                            # Always emit signal for global monitoring
                             self.key_pressed.emit(key_name)
                             
-                            # Use custom event
-                            if self.parent_app:
+                            # Use custom event only if app monitoring is enabled
+                            if self.parent_app and self.app_monitoring_enabled:
                                 QApplication.instance().postEvent(
                                     self.parent_app,
                                     CustomKeyEvent(CustomKeyEvent.KeyPress, key_name)
@@ -232,11 +251,11 @@ class GlobalMonitorFeature(QObject):
                         # Remove from pressed keys
                         if key_name in self.global_keys_pressed:
                             self.global_keys_pressed.remove(key_name)
-                            # Emit signal
+                            # Always emit signal for global monitoring
                             self.key_released.emit(key_name)
                             
-                            # Use custom event
-                            if self.parent_app:
+                            # Use custom event only if app monitoring is enabled
+                            if self.parent_app and self.app_monitoring_enabled:
                                 QApplication.instance().postEvent(
                                     self.parent_app,
                                     CustomKeyEvent(CustomKeyEvent.KeyRelease, key_name)
@@ -247,7 +266,8 @@ class GlobalMonitorFeature(QObject):
             self.global_listener.start()
             
             if self.parent_app:
-                self.parent_app.statusBar().showMessage("Global shortcut monitoring active (modifiers only)")
+                app_status = "with application events" if self.app_monitoring_enabled else "without application events"
+                self.parent_app.statusBar().showMessage(f"Global shortcut monitoring active (modifiers only, {app_status})")
             
         except Exception as e:
             if self.parent_app:
