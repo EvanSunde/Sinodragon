@@ -161,14 +161,22 @@ class ShortcutManager:
         modifiers_pressed = []
         
         for key in pressed_keys:
+            if not key:  # Skip empty keys
+                continue
+                
             key_lower = key.lower()
             if key_lower in self.modifier_map:
                 normalized_key = self.modifier_map[key_lower]
                 normalized_keys.append(normalized_key)
                 modifiers_pressed.append(normalized_key)
             else:
-                # For non-modifiers, capitalize the first letter
-                normalized_keys.append(key.upper() if len(key) == 1 else key.capitalize())
+                # For non-modifiers, preserve the original case
+                # This helps with keyboard layout matching
+                normalized_keys.append(key)
+        
+        # Log the keys we're working with
+        logger.debug(f"Normalized pressed keys: {normalized_keys}")
+        logger.debug(f"Identified modifiers: {modifiers_pressed}")
         
         # First check for combo modifiers (e.g., Ctrl+Shift)
         combo_modifiers = []
@@ -179,14 +187,33 @@ class ShortcutManager:
                     combo_modifiers.append(combo)
         
         # Check multi-modifiers first, then single modifiers
+        keys_to_highlight = []
+        
+        # Try combinations of modifiers first
         for combo in combo_modifiers:
             if combo in self.active_shortcuts:
-                return self.active_shortcuts[combo]
+                keys_to_highlight = self.active_shortcuts[combo]
+                logger.info(f"Found shortcut keys for combo {combo}: {keys_to_highlight}")
+                break
                 
         # If no combo modifier matched, check individual modifiers
-        for modifier in modifiers_pressed:
-            if modifier in self.active_shortcuts:
-                return self.active_shortcuts[modifier]
+        if not keys_to_highlight:
+            for modifier in modifiers_pressed:
+                if modifier in self.active_shortcuts:
+                    keys_to_highlight = self.active_shortcuts[modifier]
+                    logger.info(f"Found shortcut keys for {modifier}: {keys_to_highlight}")
+                    break
         
         # If no shortcut configuration matched, just return the modifiers themselves
-        return modifiers_pressed 
+        if not keys_to_highlight:
+            keys_to_highlight = modifiers_pressed 
+            logger.info(f"No shortcut configuration matched, using modifiers: {keys_to_highlight}")
+        
+        # Ensure all keys in the returned list are actually valid
+        result = []
+        for key in keys_to_highlight:
+            if key:  # Skip empty keys
+                result.append(key)
+                
+        logger.info(f"Final keys to highlight: {result}")
+        return result 

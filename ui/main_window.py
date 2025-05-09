@@ -18,7 +18,8 @@ import colorsys
 from keyboard_controller import KeyboardController
 from config_manager import ConfigManager
 from shortcut_manager import ShortcutManager
-from shortcut_lighting import ShortcutLighting
+# Import the new unified ShortcutLightingFeature instead of ShortcutLighting
+from features.shortcut_lighting import ShortcutLightingFeature
 
 # Import UI components
 from ui.keyboard_layout import KeyboardLayout
@@ -31,12 +32,27 @@ from ui.dialogs.modifier_colors import ModifierColorsDialog
 from features.text_display import TextDisplayFeature
 from features.effects import EffectsFeature
 from features.system_monitor import SystemMonitorFeature
-from features.app_shortcuts import AppShortcutFeature, AppShortcutConfigManager
+# No need to import AppShortcutFeature since it's now combined in ShortcutLightingFeature
+from features.app_shortcuts import AppShortcutConfigManager
 
 logger = logging.getLogger(__name__)
 
 class KeyboardConfigApp(QMainWindow):
-    """Main application window for keyboard LED configuration"""
+    """
+    Main application window for keyboard LED configuration
+    
+    This application provides a user interface for configuring the RGB LED lighting
+    of a keyboard. It supports various features including:
+    
+    - Global keyboard shortcut highlighting
+    - Application-specific shortcut highlighting
+    - Preset lighting configurations
+    - Selection mode for region-based configuration
+    - System tray integration
+    
+    The application uses the ShortcutLightingFeature for unified shortcut lighting,
+    which combines both global and app-specific shortcut highlighting in an efficient way.
+    """
     
     def __init__(self):
         super().__init__()
@@ -63,17 +79,17 @@ class KeyboardConfigApp(QMainWindow):
         if not layout:
             self.save_keyboard_layout()
         
-        # Create the shortcut lighting manager BEFORE setting up the UI
-        self.shortcut_lighting = ShortcutLighting(self)
+        # Initialize app shortcut config manager
+        self.app_shortcut_config = AppShortcutConfigManager(self.shortcut_manager.config_dir)
+        
+        # Create the unified shortcut lighting feature
+        # This combines global and app-specific shortcut handling
+        self.shortcut_lighting = ShortcutLightingFeature(self, self.app_shortcut_config)
         
         # Add a timer for debouncing slider changes
         self.intensity_timer = QTimer()
         self.intensity_timer.setSingleShot(True)
         self.intensity_timer.timeout.connect(self.apply_intensity)
-        
-        # Create the app shortcut feature with dedicated config manager
-        self.app_shortcut_config = AppShortcutConfigManager(self.shortcut_manager.config_dir)
-        self.app_shortcuts = AppShortcutFeature(self.app_shortcut_config, self, self.shortcut_lighting)
         
         # Set up the UI components
         self.setupUI()
@@ -312,6 +328,12 @@ class KeyboardConfigApp(QMainWindow):
                 QSystemTrayIcon.Information,
                 2000
             )
+            
+            # Update GUI if it's visible
+            control_panel = self._get_control_panel()
+            if control_panel and hasattr(control_panel, 'shortcut_toggle') and self.isVisible():
+                control_panel.shortcut_toggle.setChecked(True)
+                control_panel.shortcut_toggle.setText("Stop Shortcut Monitor")
     
     def toggle_daemon_mode(self):
         """Toggle daemon mode (shortcut monitoring only)"""
@@ -354,7 +376,8 @@ class KeyboardConfigApp(QMainWindow):
         
         # Stop shortcut monitoring
         if hasattr(self, 'shortcut_lighting'):
-            self.shortcut_lighting.stop_monitor()
+            self.shortcut_lighting.stop_global_monitor()
+            self.shortcut_lighting.stop_app_monitor()
         
         # Disconnect from keyboard
         if self.keyboard.connected:
@@ -393,17 +416,49 @@ class KeyboardConfigApp(QMainWindow):
     def keyPressEvent(self, event):
         """Handle key press events"""
         super().keyPressEvent(event)
-        self.handle_key_press(event)
-    
+        
+        # Extract key name from event
+        key_name = self._get_key_name_from_event(event)
+        if not key_name:
+            return
+            
+        # Forward to shortcut lighting handler
+        if hasattr(self, 'shortcut_lighting'):
+            self.shortcut_lighting.handle_key_press(key_name)
+
     def keyReleaseEvent(self, event):
         """Handle key release events"""
         super().keyReleaseEvent(event)
-        self.handle_key_release(event)
+        
+        # Extract key name from event
+        key_name = self._get_key_name_from_event(event)
+        if not key_name:
+            return
+        
+        # Forward to shortcut lighting handler
+        if hasattr(self, 'shortcut_lighting'):
+            self.shortcut_lighting.handle_key_release(key_name)
+    
+    def _get_key_name_from_event(self, event):
+        """Extract normalized key name from a key event"""
+        # Extract key name from event
+        key_name = event.text().upper()
+        
+        if len(key_name) == 0 or ord(key_name[0]) < 32:
+            # Try to get key name from key constant
+            key = event.key()
+            if key in QT_KEY_MAP:
+                key_name = QT_KEY_MAP[key]
+            else:
+                return None
+        
+        return key_name
     
     def handle_key_press(self, event):
         """Handle key press events and highlight shortcuts if enabled"""
         # Skip if shortcut monitoring is disabled
-        if not hasattr(self, 'shortcut_toggle') or not self.shortcut_toggle.isChecked():
+        control_panel = self._get_control_panel()
+        if not control_panel or not hasattr(control_panel, 'shortcut_toggle') or not control_panel.shortcut_toggle.isChecked():
             return
         
         # Extract key name from event
@@ -414,28 +469,15 @@ class KeyboardConfigApp(QMainWindow):
             if key in QT_KEY_MAP:
                 key_name = QT_KEY_MAP[key]
         
-        # First check if app-specific shortcut handling is enabled
-        if hasattr(self, 'app_shortcuts') and self.app_shortcut_toggle.isChecked():
-            # Check if this is a meta/super key (always allow)
-            is_meta_key = key_name.lower() in ["win", "meta", "super"]
-            
-            # Try to handle with app-specific shortcuts first
-            if self.app_shortcuts.handle_key_press(key_name):
-                # App-specific shortcuts handled it, do not continue to global shortcuts
-                return
-            
-            # Check if global shortcuts should be disabled for this app
-            if self.app_shortcuts.should_disable_global_shortcuts(key_name):
-                # Skip global shortcut handling except for meta/super keys
-                if not is_meta_key:
-                    return
-        
-        # If not handled by app-specific shortcuts or is a meta key, use global shortcut lighting
+        # Simply pass the key press to the unified shortcut lighting feature
+        # which will handle both global and app-specific shortcuts internally
         self.shortcut_lighting.handle_key_press(key_name)
     
     def handle_key_release(self, event):
         """Handle key release events for shortcuts"""
-        if not hasattr(self, 'shortcut_toggle') or not self.shortcut_toggle.isChecked():
+        # Skip if shortcut monitoring is disabled
+        control_panel = self._get_control_panel()
+        if not control_panel or not hasattr(control_panel, 'shortcut_toggle') or not control_panel.shortcut_toggle.isChecked():
             return
         
         # Extract key name from event
@@ -446,14 +488,8 @@ class KeyboardConfigApp(QMainWindow):
             if key in QT_KEY_MAP:
                 key_name = QT_KEY_MAP[key]
         
-        # First check if app-specific shortcut handling is enabled
-        if hasattr(self, 'app_shortcuts') and self.app_shortcut_toggle.isChecked():
-            # Try to handle with app-specific shortcuts first
-            if self.app_shortcuts.handle_key_release(key_name):
-                # App-specific shortcuts handled it, do not continue to global shortcuts
-                return
-        
-        # If not handled by app-specific shortcuts, use global shortcut lighting
+        # Simply pass the key release to the unified shortcut lighting feature
+        # which will handle both global and app-specific shortcuts internally
         self.shortcut_lighting.handle_key_release(key_name)
     
     # Keyboard connection handling
@@ -731,27 +767,35 @@ class KeyboardConfigApp(QMainWindow):
     
     # Shortcut monitoring methods
     def toggle_shortcut_monitor(self):
-        """Toggle shortcut monitoring on/off"""
-        # Get control panel to access shortcut_toggle
-        control_panel = self._get_control_panel()
-        
-        if not control_panel or not hasattr(control_panel, 'shortcut_toggle'):
-            QMessageBox.warning(self, "Error", "Shortcut toggle control not found")
-            return
+        """Toggle global shortcut monitoring on/off"""
+        if self.shortcut_toggle.isChecked():
+            self.shortcut_toggle.setText("Stop Shortcut Monitor")
             
-        shortcut_toggle = control_panel.shortcut_toggle
-        is_checked = shortcut_toggle.isChecked()
-        
-        if is_checked:
-            shortcut_toggle.setText("Stop Shortcut Monitor")
-            self.shortcut_lighting.start_monitor()
-            self.start_global_shortcut_monitor()
+            # Use unified feature's global monitoring
+            if hasattr(self, 'shortcut_lighting'):
+                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
+                    # Use new unified feature
+                    self.shortcut_lighting.start_global_monitor()
+                else:
+                    # Legacy support for old ShortcutLighting class
+                    self.shortcut_lighting.start_monitor()
+            
+            # Update global state
             self.is_monitoring_shortcuts = True
             self.statusBar().showMessage("Global shortcut monitoring started")
         else:
-            shortcut_toggle.setText("Start Shortcut Monitor")
-            self.shortcut_lighting.stop_monitor()
-            self.stop_global_shortcut_monitor()
+            self.shortcut_toggle.setText("Start Shortcut Monitor")
+            
+            # Use unified feature's global monitoring
+            if hasattr(self, 'shortcut_lighting'):
+                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
+                    # Use new unified feature
+                    self.shortcut_lighting.stop_global_monitor()
+                else:
+                    # Legacy support for old ShortcutLighting class
+                    self.shortcut_lighting.stop_monitor()
+            
+            # Update global state
             self.is_monitoring_shortcuts = False
             self.statusBar().showMessage("Global shortcut monitoring stopped")
     
@@ -775,11 +819,15 @@ class KeyboardConfigApp(QMainWindow):
     
     def start_global_shortcut_monitor(self):
         """Start global shortcut monitoring"""
-        pass  # Implement based on the original keyboard_layout.py
+        if hasattr(self, 'shortcut_lighting'):
+            self.shortcut_lighting.start_global_monitor()
+            logger.info("Global shortcut monitoring started")
     
     def stop_global_shortcut_monitor(self):
         """Stop the global shortcut monitoring"""
-        pass  # Implement based on the original keyboard_layout.py
+        if hasattr(self, 'shortcut_lighting'):
+            self.shortcut_lighting.stop_global_monitor()
+            logger.info("Global shortcut monitoring stopped")
     
     # App shortcut methods
     def toggle_app_shortcuts(self):
@@ -796,20 +844,25 @@ class KeyboardConfigApp(QMainWindow):
         
         if is_checked:
             app_shortcut_toggle.setText("Disable App Shortcuts")
-            self.app_shortcuts.start_monitoring()
+            # Use the unified feature's app monitor methods
+            self.shortcut_lighting.start_app_monitor()
             
             # Force immediate update of default keys
-            QTimer.singleShot(500, self.app_shortcuts.highlight_default_keys)
+            QTimer.singleShot(500, self.shortcut_lighting.highlight_default_keys)
             
             self.statusBar().showMessage("Application shortcut monitoring enabled")
         else:
             app_shortcut_toggle.setText("Enable App Shortcuts")
-            self.app_shortcuts.stop_monitoring()
+            # Use the unified feature's app monitor methods
+            self.shortcut_lighting.stop_app_monitor()
             self.statusBar().showMessage("Application shortcut monitoring disabled")
     
     def manage_app_shortcuts(self):
         """Open the application shortcut manager dialog"""
-        self.app_shortcuts.show_app_shortcut_manager()
+        from ui.dialogs.application_shortcuts import AppShortcutManagerDialog
+        # Use the app_shortcut_config directly since it's needed for the dialog
+        dialog = AppShortcutManagerDialog(self, self.app_shortcut_config)
+        dialog.exec_()
     
     # Utility methods
     def save_keyboard_layout(self):
@@ -847,9 +900,10 @@ class KeyboardConfigApp(QMainWindow):
             # Stop any active listeners
             self.stop_global_shortcut_monitor()
             
-            # Stop shortcut monitoring
+            # Stop all shortcut monitoring (both global and app-specific)
             if hasattr(self, 'shortcut_lighting'):
-                self.shortcut_lighting.stop_monitor()
+                self.shortcut_lighting.stop_global_monitor()
+                self.shortcut_lighting.stop_app_monitor()
             
             # Disconnect from keyboard
             if self.keyboard.connected:
@@ -1024,4 +1078,32 @@ class KeyboardConfigApp(QMainWindow):
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
         
-        return True 
+        return True
+
+    def debug_shortcut_lighting(self):
+        """Trigger debugging for the shortcut lighting feature"""
+        logger.info("Triggering shortcut lighting debug")
+        if hasattr(self, 'shortcut_lighting'):
+            # Call the debug method in the shortcut lighting feature
+            self.shortcut_lighting.debug_keyboard_state()
+            logger.info("Shortcut lighting debug triggered")
+            self.statusBar().showMessage("Shortcut lighting debug info written to logs")
+        else:
+            logger.warning("No shortcut_lighting feature available for debugging")
+            self.statusBar().showMessage("Shortcut lighting feature not available")
+            
+        # Try to print some additional app-level debugging info
+        try:
+            logger.info(f"Is monitoring shortcuts: {self.is_monitoring_shortcuts}")
+            logger.info(f"Has shortcut_toggle: {hasattr(self._get_control_panel(), 'shortcut_toggle')}")
+            if hasattr(self._get_control_panel(), 'shortcut_toggle'):
+                logger.info(f"shortcut_toggle is checked: {self._get_control_panel().shortcut_toggle.isChecked()}")
+            
+            # Check what type of shortcut lighting we're using
+            if hasattr(self, 'shortcut_lighting'):
+                logger.info(f"Shortcut lighting type: {type(self.shortcut_lighting).__name__}")
+                
+            # Check keyboard status
+            logger.info(f"Keyboard connected: {self.keyboard.connected}")
+        except Exception as e:
+            logger.error(f"Error in debug_shortcut_lighting: {e}", exc_info=True) 

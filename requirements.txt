@@ -1,3 +1,4 @@
 PyQt5==5.15.9
 hidapi==0.13.1
 pillow==10.3.0 
+evdev>=1.6.0  # Optional dependency for system-wide key monitoring 
