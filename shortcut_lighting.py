@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
 import time
 import logging
+from features.global_monitor import GlobalMonitorFeature
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,11 @@ class ShortcutLighting(QObject):
         self.shortcut_manager = keyboard_app.shortcut_manager
         self.keyboard = keyboard_app.keyboard
         self.keys = keyboard_app.keys
+        
+        # Create global monitor feature
+        self.global_monitor = GlobalMonitorFeature(keyboard_app)
+        self.global_monitor.key_pressed.connect(self.handle_key_press)
+        self.global_monitor.key_released.connect(self.handle_key_release)
         
         # Monitoring state
         self.monitor_active = False
@@ -54,7 +60,7 @@ class ShortcutLighting(QObject):
             self.batch_update_timer.setSingleShot(True)
             self.batch_update_timer.timeout.connect(self.apply_pending_updates)
     
-    def start_monitor(self):
+    def start_monitor(self, use_global=True):
         """Start monitoring keyboard for shortcuts"""
         if self.monitor_active:
             return
@@ -64,11 +70,20 @@ class ShortcutLighting(QObject):
         self.original_state_saved = False
         # Initialize color cache
         self.key_color_cache = {}
+        
+        # Start global monitor if requested
+        if use_global:
+            self.global_monitor.start_monitor()
+            
         self.app.statusBar().showMessage("Shortcut monitoring activated")
     
     def stop_monitor(self):
         """Stop monitoring keyboard for shortcuts"""
         self.monitor_active = False
+        
+        # Stop global monitor
+        self.global_monitor.stop_monitor()
+        
         self.app.statusBar().showMessage("Shortcut monitoring deactivated")
         
         # Restore original colors
@@ -77,6 +92,10 @@ class ShortcutLighting(QObject):
     def handle_key_press(self, key_name):
         """Handle a key press event"""
         if not self.monitor_active:
+            return
+        
+        # Check if key is already in the set to avoid duplicate handling
+        if key_name in self.currently_pressed_keys:
             return
         
         self.currently_pressed_keys.add(key_name)
@@ -131,7 +150,7 @@ class ShortcutLighting(QObject):
         if pressed_keys:
             try:
                 # Get keys from shortcut manager if any modifiers are pressed
-                keys_to_highlight = self.shortcut_manager.get_highlighted_keys(pressed_keys)
+                keys_to_highlight = self.shortcut_manager.get_keys_to_highlight(pressed_keys)
                 logger.debug(f"Keys to highlight from shortcut manager: {keys_to_highlight}")
                 
                 # Make sure modifiers themselves are always included

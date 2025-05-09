@@ -9,7 +9,7 @@ import threading
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                            QSplitter, QComboBox, QLineEdit, QPushButton, QLabel,
                            QMessageBox, QAction, QMenu, QSystemTrayIcon, QApplication,
-                           QColorDialog)
+                           QColorDialog, QGroupBox, QDialog, QTableWidget, QTableWidgetItem)
 from PyQt5.QtCore import Qt, QTimer, QEvent
 from PyQt5.QtGui import QColor
 import colorsys
@@ -143,6 +143,35 @@ class KeyboardConfigApp(QMainWindow):
         self.statusBar().showMessage("Disconnected")
         
         self.setCentralWidget(central_widget)
+        
+        # In the setupUI method, add this if it's not already there
+        if not hasattr(self, 'app_shortcut_toggle'):
+            # Create a shortcut feature section
+            shortcut_feature_group = QGroupBox("App Shortcuts")
+            shortcut_feature_layout = QVBoxLayout()
+            
+            # Toggle button for app-specific shortcuts
+            self.app_shortcut_toggle = QPushButton("Enable App Shortcuts")
+            self.app_shortcut_toggle.setCheckable(True)
+            self.app_shortcut_toggle.clicked.connect(self.toggle_app_shortcuts)
+            shortcut_feature_layout.addWidget(self.app_shortcut_toggle)
+            
+            # Button to manage app shortcuts
+            manage_app_shortcuts_btn = QPushButton("Manage App Shortcuts")
+            manage_app_shortcuts_btn.clicked.connect(self.manage_app_shortcuts)
+            shortcut_feature_layout.addWidget(manage_app_shortcuts_btn)
+            
+            shortcut_feature_group.setLayout(shortcut_feature_layout)
+            # Add to the appropriate layout (you'll need to adjust this based on your UI structure)
+            # features_layout.addWidget(shortcut_feature_group)
+        
+        # In the shortcut monitoring section, add or update the Manage Shortcuts button
+        shortcut_controls_layout = QVBoxLayout()
+        
+        # Create button for managing shortcuts
+        manage_shortcuts_btn = QPushButton("Manage Shortcuts")
+        manage_shortcuts_btn.clicked.connect(self.manage_shortcuts)
+        shortcut_controls_layout.addWidget(manage_shortcuts_btn)
     
     def _setup_top_control_panel(self, main_layout):
         """Set up the top control panel with configuration controls"""
@@ -381,13 +410,20 @@ class KeyboardConfigApp(QMainWindow):
         return super().eventFilter(obj, event)
     
     def event(self, event):
-        """Handle custom key events from Wayland/evdev monitoring"""
-        if event.type() == CustomKeyEvent.KeyPress:
-            self.shortcut_lighting.handle_key_press(event.key_name)
-            return True
-        elif event.type() == CustomKeyEvent.KeyRelease:
-            self.shortcut_lighting.handle_key_release(event.key_name)
-            return True
+        """Handle custom key events from global monitoring"""
+        try:
+            if hasattr(event, 'type'):
+                event_type = event.type()
+                if event_type == CustomKeyEvent.KeyPress and hasattr(self, 'shortcut_lighting'):
+                    self.shortcut_lighting.handle_key_press(event.key_name)
+                    return True
+                elif event_type == CustomKeyEvent.KeyRelease and hasattr(self, 'shortcut_lighting'):
+                    self.shortcut_lighting.handle_key_release(event.key_name)
+                    return True
+        except Exception as e:
+            logging.error(f"Error in event handler: {e}")
+        
+        # Call the parent class event handler for unhandled events
         return super().event(event)
     
     def keyPressEvent(self, event):
@@ -414,24 +450,35 @@ class KeyboardConfigApp(QMainWindow):
             if key in QT_KEY_MAP:
                 key_name = QT_KEY_MAP[key]
         
-        # First check if app-specific shortcut handling is enabled
-        if hasattr(self, 'app_shortcuts') and self.app_shortcut_toggle.isChecked():
-            # Check if this is a meta/super key (always allow)
-            is_meta_key = key_name.lower() in ["win", "meta", "super"]
+        # Check if app shortcuts should be processed
+        try:
+            # Safely check if app_shortcuts exists and is enabled
+            process_app_shortcuts = (hasattr(self, 'app_shortcuts') and 
+                                    hasattr(self, 'app_shortcut_toggle') and 
+                                    not self.app_shortcut_toggle.isHidden() and 
+                                    self.app_shortcut_toggle.isChecked())
             
-            # Try to handle with app-specific shortcuts first
-            if self.app_shortcuts.handle_key_press(key_name):
-                # App-specific shortcuts handled it, do not continue to global shortcuts
-                return
-            
-            # Check if global shortcuts should be disabled for this app
-            if self.app_shortcuts.should_disable_global_shortcuts(key_name):
-                # Skip global shortcut handling except for meta/super keys
-                if not is_meta_key:
+            if process_app_shortcuts:
+                # Check if this is a meta/super key (always allow)
+                is_meta_key = key_name.lower() in ["win", "meta", "super"]
+                
+                # Try to handle with app-specific shortcuts first
+                if self.app_shortcuts.handle_key_press(key_name):
+                    # App-specific shortcuts handled it, do not continue to global shortcuts
                     return
+                
+                # Check if global shortcuts should be disabled for this app
+                if self.app_shortcuts.should_disable_global_shortcuts(key_name):
+                    # Skip global shortcut handling except for meta/super keys
+                    if not is_meta_key:
+                        return
+        except (RuntimeError, AttributeError) as e:
+            # Widget was deleted or another error occurred
+            logging.warning(f"Error accessing app shortcut toggle: {e}")
         
         # If not handled by app-specific shortcuts or is a meta key, use global shortcut lighting
-        self.shortcut_lighting.handle_key_press(key_name)
+        if hasattr(self, 'shortcut_lighting'):
+            self.shortcut_lighting.handle_key_press(key_name)
     
     def handle_key_release(self, event):
         """Handle key release events for shortcuts"""
@@ -446,15 +493,26 @@ class KeyboardConfigApp(QMainWindow):
             if key in QT_KEY_MAP:
                 key_name = QT_KEY_MAP[key]
         
-        # First check if app-specific shortcut handling is enabled
-        if hasattr(self, 'app_shortcuts') and self.app_shortcut_toggle.isChecked():
-            # Try to handle with app-specific shortcuts first
-            if self.app_shortcuts.handle_key_release(key_name):
-                # App-specific shortcuts handled it, do not continue to global shortcuts
-                return
+        # Check if app shortcuts should be processed
+        try:
+            # Safely check if app_shortcuts exists and is enabled
+            process_app_shortcuts = (hasattr(self, 'app_shortcuts') and 
+                                    hasattr(self, 'app_shortcut_toggle') and 
+                                    not self.app_shortcut_toggle.isHidden() and 
+                                    self.app_shortcut_toggle.isChecked())
+            
+            if process_app_shortcuts:
+                # Try to handle with app-specific shortcuts first
+                if self.app_shortcuts.handle_key_release(key_name):
+                    # App-specific shortcuts handled it, do not continue to global shortcuts
+                    return
+        except (RuntimeError, AttributeError) as e:
+            # Widget was deleted or another error occurred
+            logging.warning(f"Error accessing app shortcut toggle: {e}")
         
         # If not handled by app-specific shortcuts, use global shortcut lighting
-        self.shortcut_lighting.handle_key_release(key_name)
+        if hasattr(self, 'shortcut_lighting'):
+            self.shortcut_lighting.handle_key_release(key_name)
     
     # Keyboard connection handling
     def connect_to_keyboard(self):
@@ -732,28 +790,30 @@ class KeyboardConfigApp(QMainWindow):
     # Shortcut monitoring methods
     def toggle_shortcut_monitor(self):
         """Toggle shortcut monitoring on/off"""
-        # Get control panel to access shortcut_toggle
-        control_panel = self._get_control_panel()
-        
-        if not control_panel or not hasattr(control_panel, 'shortcut_toggle'):
-            QMessageBox.warning(self, "Error", "Shortcut toggle control not found")
-            return
-            
-        shortcut_toggle = control_panel.shortcut_toggle
-        is_checked = shortcut_toggle.isChecked()
-        
-        if is_checked:
-            shortcut_toggle.setText("Stop Shortcut Monitor")
-            self.shortcut_lighting.start_monitor()
-            self.start_global_shortcut_monitor()
-            self.is_monitoring_shortcuts = True
-            self.statusBar().showMessage("Global shortcut monitoring started")
-        else:
-            shortcut_toggle.setText("Start Shortcut Monitor")
-            self.shortcut_lighting.stop_monitor()
-            self.stop_global_shortcut_monitor()
-            self.is_monitoring_shortcuts = False
-            self.statusBar().showMessage("Global shortcut monitoring stopped")
+        if hasattr(self, 'shortcut_toggle'):
+            if self.shortcut_toggle.isChecked():
+                self.shortcut_toggle.setText("Stop Shortcut Monitor")
+                
+                # Start global monitoring
+                if hasattr(self, 'shortcut_lighting'):
+                    # Pass in the global_monitoring flag from the checkbox if it exists
+                    use_global = True
+                    if hasattr(self, 'global_shortcut_checkbox'):
+                        use_global = self.global_shortcut_checkbox.isChecked()
+                    
+                    self.shortcut_lighting.start_monitor(use_global=use_global)
+                    self.is_monitoring_shortcuts = True
+                
+                self.statusBar().showMessage("Shortcut monitoring activated")
+            else:
+                self.shortcut_toggle.setText("Start Shortcut Monitor")
+                
+                # Stop global monitoring
+                if hasattr(self, 'shortcut_lighting'):
+                    self.shortcut_lighting.stop_monitor()
+                    self.is_monitoring_shortcuts = False
+                
+                self.statusBar().showMessage("Shortcut monitoring deactivated")
     
     def choose_highlight_color(self):
         """Choose a custom color for highlighting shortcuts"""
@@ -1024,4 +1084,135 @@ class KeyboardConfigApp(QMainWindow):
         if self.auto_reload and self.keyboard.connected:
             self.send_config()
         
-        return True 
+        return True
+
+    def manage_shortcuts(self):
+        """Open the shortcut manager dialog to customize key associations"""
+        # Create dialog window
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manage Keyboard Shortcuts")
+        dialog.setMinimumSize(500, 400)
+        
+        # Create layout for dialog
+        layout = QVBoxLayout()
+        
+        # Create table for shortcuts
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Modifier", "Keys to Highlight"])
+        table.horizontalHeader().setStretchLastSection(True)
+        
+        # Fill table with shortcuts
+        shortcuts = self.shortcut_manager.active_shortcuts
+        table.setRowCount(len(shortcuts))
+        
+        for i, (mod, keys) in enumerate(shortcuts.items()):
+            mod_item = QTableWidgetItem(mod)
+            keys_item = QTableWidgetItem(" ".join(keys))
+            
+            table.setItem(i, 0, mod_item)
+            table.setItem(i, 1, keys_item)
+        
+        layout.addWidget(table)
+        
+        # Add buttons for managing shortcuts
+        buttons_layout = QHBoxLayout()
+        
+        # Add shortcut button
+        add_btn = QPushButton("Add Shortcut")
+        def add_shortcut():
+            # Get the last row
+            row = table.rowCount()
+            table.setRowCount(row + 1)
+            
+            # Add empty items
+            table.setItem(row, 0, QTableWidgetItem(""))
+            table.setItem(row, 1, QTableWidgetItem(""))
+        
+        add_btn.clicked.connect(add_shortcut)
+        buttons_layout.addWidget(add_btn)
+        
+        # Delete shortcut button
+        del_btn = QPushButton("Delete Selected")
+        def delete_shortcut():
+            selected = table.selectedIndexes()
+            if selected:
+                row = selected[0].row()
+                table.removeRow(row)
+        
+        del_btn.clicked.connect(delete_shortcut)
+        buttons_layout.addWidget(del_btn)
+        
+        # Restore defaults button
+        reset_btn = QPushButton("Restore Defaults")
+        reset_btn.clicked.connect(lambda: self.restore_default_shortcuts(table))
+        buttons_layout.addWidget(reset_btn)
+        
+        layout.addLayout(buttons_layout)
+        
+        # Save/Cancel buttons
+        action_buttons = QHBoxLayout()
+        
+        save_btn = QPushButton("Save Changes")
+        def save_shortcuts():
+            # Create new shortcuts dictionary
+            new_shortcuts = {}
+            
+            for row in range(table.rowCount()):
+                mod = table.item(row, 0).text().strip()
+                keys_text = table.item(row, 1).text().strip()
+                
+                # Skip empty rows
+                if not mod or not keys_text:
+                    continue
+                    
+                # Split keys by space
+                keys = [k.strip() for k in keys_text.split() if k.strip()]
+                
+                # Add to shortcuts dict
+                new_shortcuts[mod] = keys
+            
+            # Update shortcuts in manager
+            self.shortcut_manager.active_shortcuts = new_shortcuts
+            self.shortcut_manager.save_shortcuts()
+            
+            dialog.accept()
+        
+        save_btn.clicked.connect(save_shortcuts)
+        action_buttons.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        action_buttons.addWidget(cancel_btn)
+        
+        layout.addLayout(action_buttons)
+        
+        # Set dialog layout
+        dialog.setLayout(layout)
+        
+        # Show dialog
+        dialog.exec_()
+
+    def restore_default_shortcuts(self, table):
+        """Restore default shortcuts"""
+        confirm = QMessageBox.question(
+            self, "Confirm Reset", 
+            "Are you sure you want to restore default shortcuts? This will overwrite any custom shortcuts.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            # Reset shortcuts in manager
+            self.shortcut_manager.active_shortcuts = self.shortcut_manager.default_shortcuts.copy()
+            self.shortcut_manager.save_shortcuts()
+            
+            # Refresh table
+            shortcuts = self.shortcut_manager.active_shortcuts
+            table.setRowCount(len(shortcuts))
+            
+            for i, (mod, keys) in enumerate(shortcuts.items()):
+                mod_item = QTableWidgetItem(mod)
+                keys_item = QTableWidgetItem(" ".join(keys))
+                
+                table.setItem(i, 0, mod_item)
+                table.setItem(i, 1, keys_item) 
