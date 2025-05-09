@@ -174,6 +174,11 @@ class ShortcutManager:
                 # This helps with keyboard layout matching
                 normalized_keys.append(key)
         
+        # Skip processing if no valid keys
+        if not normalized_keys:
+            logger.debug("No valid keys to highlight")
+            return []
+        
         # Log the keys we're working with
         logger.debug(f"Normalized pressed keys: {normalized_keys}")
         logger.debug(f"Identified modifiers: {modifiers_pressed}")
@@ -197,7 +202,7 @@ class ShortcutManager:
                 break
                 
         # If no combo modifier matched, check individual modifiers
-        if not keys_to_highlight:
+        if not keys_to_highlight and modifiers_pressed:
             for modifier in modifiers_pressed:
                 if modifier in self.active_shortcuts:
                     keys_to_highlight = self.active_shortcuts[modifier]
@@ -205,15 +210,26 @@ class ShortcutManager:
                     break
         
         # If no shortcut configuration matched, just return the modifiers themselves
-        if not keys_to_highlight:
+        if not keys_to_highlight and modifiers_pressed:
             keys_to_highlight = modifiers_pressed 
             logger.info(f"No shortcut configuration matched, using modifiers: {keys_to_highlight}")
         
         # Ensure all keys in the returned list are actually valid
         result = []
         for key in keys_to_highlight:
-            if key:  # Skip empty keys
+            if key and isinstance(key, str):  # Skip empty keys and non-string values
                 result.append(key)
                 
         logger.info(f"Final keys to highlight: {result}")
         return result 
+    
+    def reset_to_defaults(self):
+        """Reset shortcuts to default values and save"""
+        # Make a deep copy of the default shortcuts to avoid reference issues
+        self.active_shortcuts = {}
+        for modifier, keys in self.default_shortcuts.items():
+            self.active_shortcuts[modifier] = list(keys)  # Create a new list from the keys
+        
+        # Save the shortcuts
+        self.save_shortcuts()
+        logger.info("Reset shortcuts to default values") 

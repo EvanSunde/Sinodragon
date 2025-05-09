@@ -14,7 +14,8 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                             QPushButton, QListWidget, QComboBox, QLineEdit,
                             QTableWidget, QTableWidgetItem, QHeaderView,
                             QCheckBox, QMessageBox, QColorDialog, QFrame,
-                            QSplitter, QWidget, QGroupBox)
+                            QSplitter, QWidget, QGroupBox, QTabWidget, QInputDialog,
+                            QAbstractItemView)
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
@@ -851,226 +852,299 @@ class AppShortcutFeature:
 class AppShortcutManagerDialog(QDialog):
     def __init__(self, keyboard_app, feature):
         super().__init__(keyboard_app)
-        self.app = keyboard_app
         self.feature = feature
-        self.setWindowTitle("Application Shortcut Manager")
-        self.setMinimumSize(800, 600)
+        self.keyboard_app = keyboard_app
+        
+        self.setWindowTitle("Application Shortcuts Manager")
+        self.setMinimumSize(800, 500)
         
         # Main layout
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
         
-        # Split view with app list on left, details on right
+        # App selection
+        app_selection_layout = QHBoxLayout()
+        app_selection_layout.addWidget(QLabel("Application:"))
+        
+        self.app_selector = QComboBox()
+        self.app_selector.addItems(self.feature.app_shortcuts.keys())
+        self.app_selector.currentTextChanged.connect(self.load_app_shortcuts)
+        app_selection_layout.addWidget(self.app_selector, 1)
+        
+        # App name edit
+        app_selection_layout.addWidget(QLabel("Name:"))
+        self.app_name_edit = QLineEdit()
+        app_selection_layout.addWidget(self.app_name_edit, 1)
+        
+        main_layout.addLayout(app_selection_layout)
+        
+        # Splitter for tables and settings
         splitter = QSplitter(Qt.Horizontal)
         
-        # Left side - App list
-        app_list_widget = QWidget()
-        app_list_layout = QVBoxLayout(app_list_widget)
+        # Left side - Tables for shortcut configuration
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
         
-        app_list_layout.addWidget(QLabel("Applications:"))
-        
-        self.app_list = QListWidget()
-        self.app_list.currentItemChanged.connect(self.app_selected)
-        app_list_layout.addWidget(self.app_list)
-        
-        # Buttons for app management
-        app_buttons_layout = QHBoxLayout()
-        
-        add_app_btn = QPushButton("New App")
-        add_app_btn.clicked.connect(self.add_new_app)
-        app_buttons_layout.addWidget(add_app_btn)
-        
-        remove_app_btn = QPushButton("Remove App")
-        remove_app_btn.clicked.connect(self.remove_app)
-        app_buttons_layout.addWidget(remove_app_btn)
-        
-        app_list_layout.addLayout(app_buttons_layout)
-        
-        # Right side - App details
-        app_details_widget = QWidget()
-        app_details_layout = QVBoxLayout(app_details_widget)
-        
-        # App name
-        name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Application Name:"))
-        
-        self.app_name_edit = QLineEdit()
-        name_layout.addWidget(self.app_name_edit)
-        
-        app_details_layout.addLayout(name_layout)
-        
-        # App highlight color
-        color_layout = QHBoxLayout()
-        color_layout.addWidget(QLabel("Highlight Color:"))
-        
-        self.app_color_display = ColorDisplay(self.feature.default_color)
-        self.app_color_display.clicked.connect(self.choose_app_color)
-        color_layout.addWidget(self.app_color_display)
-        
-        app_details_layout.addLayout(color_layout)
-        
-        # Default keys to highlight (when no modifiers are pressed)
-        default_keys_layout = QVBoxLayout()
-        default_keys_layout.addWidget(QLabel("Default Keys (highlighted when app is active):"))
-        
-        self.default_keys_edit = QLineEdit()
-        self.default_keys_edit.setPlaceholderText("e.g., W,A,S,D (comma-separated)")
-        default_keys_layout.addWidget(self.default_keys_edit)
-        
-        app_details_layout.addLayout(default_keys_layout)
-        
-        # Modifier shortcut sections
-        app_details_layout.addWidget(QLabel("Modifier Shortcuts:"))
-        
-        # Create tables for common modifier combinations
+        # Create tables for different shortcut groups
+        self.default_keys_table = self.create_shortcut_table("Default Keys (always highlighted)")
         self.modifier_tables = {}
         
-        # Ctrl keys
-        ctrl_group = QGroupBox("Ctrl Keys")
-        ctrl_layout = QVBoxLayout(ctrl_group)
-        self.ctrl_keys_edit = QLineEdit()
-        self.ctrl_keys_edit.setPlaceholderText("e.g., C,V,X,Z (comma-separated)")
-        ctrl_layout.addWidget(self.ctrl_keys_edit)
-        app_details_layout.addWidget(ctrl_group)
+        # Create a tab widget for the different shortcut groups
+        shortcuts_tabs = QTabWidget()
         
-        # Shift keys
-        shift_group = QGroupBox("Shift Keys")
-        shift_layout = QVBoxLayout(shift_group)
-        self.shift_keys_edit = QLineEdit()
-        self.shift_keys_edit.setPlaceholderText("e.g., Tab,1,2,3 (comma-separated)")
-        shift_layout.addWidget(self.shift_keys_edit)
-        app_details_layout.addWidget(shift_group)
+        # Default keys tab
+        default_tab = QWidget()
+        default_layout = QVBoxLayout(default_tab)
+        default_layout.addWidget(self.default_keys_table)
+        shortcuts_tabs.addTab(default_tab, "Default Keys")
         
-        # Alt keys
-        alt_group = QGroupBox("Alt Keys")
-        alt_layout = QVBoxLayout(alt_group)
-        self.alt_keys_edit = QLineEdit()
-        self.alt_keys_edit.setPlaceholderText("e.g., Tab,F4 (comma-separated)")
-        alt_layout.addWidget(self.alt_keys_edit)
-        app_details_layout.addWidget(alt_group)
+        # Modifier keys tabs
+        for modifier in ["Ctrl", "Shift", "Alt", "Ctrl+Shift", "Ctrl+Alt", "Alt+Shift"]:
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            table = self.create_shortcut_table(f"Keys to highlight when {modifier} is pressed")
+            self.modifier_tables[modifier] = table
+            tab_layout.addWidget(table)
+            shortcuts_tabs.addTab(tab, modifier)
         
-        # Ctrl+Shift keys
-        ctrl_shift_group = QGroupBox("Ctrl+Shift Keys")
-        ctrl_shift_layout = QVBoxLayout(ctrl_shift_group)
-        self.ctrl_shift_keys_edit = QLineEdit()
-        self.ctrl_shift_keys_edit.setPlaceholderText("e.g., N,T (comma-separated)")
-        ctrl_shift_layout.addWidget(self.ctrl_shift_keys_edit)
-        app_details_layout.addWidget(ctrl_shift_group)
+        left_layout.addWidget(shortcuts_tabs)
         
-        # Ctrl+Alt keys
-        ctrl_alt_group = QGroupBox("Ctrl+Alt Keys")
-        ctrl_alt_layout = QVBoxLayout(ctrl_alt_group)
-        self.ctrl_alt_keys_edit = QLineEdit()
-        self.ctrl_alt_keys_edit.setPlaceholderText("e.g., T,D (comma-separated)")
-        ctrl_alt_layout.addWidget(self.ctrl_alt_keys_edit)
-        app_details_layout.addWidget(ctrl_alt_group)
+        # Right side - App settings
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
         
-        # Alt+Shift keys
-        alt_shift_group = QGroupBox("Alt+Shift Keys")
-        alt_shift_layout = QVBoxLayout(alt_shift_group)
-        self.alt_shift_keys_edit = QLineEdit()
-        self.alt_shift_keys_edit.setPlaceholderText("e.g., Tab,F4 (comma-separated)")
-        alt_shift_layout.addWidget(self.alt_shift_keys_edit)
-        app_details_layout.addWidget(alt_shift_group)
+        # App color selection
+        color_group = QGroupBox("Application Color")
+        color_layout = QVBoxLayout()
+        
+        # Create a color display widget
+        self.app_color_display = QFrame()
+        self.app_color_display.setMinimumSize(80, 40)
+        self.app_color_display.setFrameShape(QFrame.Box)
+        self.app_color_display.setFrameShadow(QFrame.Sunken)
+        
+        # Initialize with default color
+        self.app_color = QColor(255, 165, 0)  # Default to orange
+        self.update_color_display()
+        
+        # Color button
+        select_color_btn = QPushButton("Select Color...")
+        select_color_btn.clicked.connect(self.select_app_color)
+        
+        color_layout.addWidget(self.app_color_display)
+        color_layout.addWidget(select_color_btn)
+        color_group.setLayout(color_layout)
+        
+        right_layout.addWidget(color_group)
         
         # Disabled keys section
         disabled_keys_group = QGroupBox("Disabled Keys")
-        disabled_keys_layout = QVBoxLayout(disabled_keys_group)
+        disabled_layout = QVBoxLayout()
         
-        # Help text
-        disabled_keys_layout.addWidget(QLabel("Keys that should not be highlighted in this app:"))
-        
+        disabled_layout.addWidget(QLabel("Keys to never highlight (space-separated):"))
         self.disabled_keys_edit = QLineEdit()
-        self.disabled_keys_edit.setPlaceholderText("e.g., Esc,F1,F2 (comma-separated)")
-        disabled_keys_layout.addWidget(self.disabled_keys_edit)
+        disabled_layout.addWidget(self.disabled_keys_edit)
         
-        app_details_layout.addWidget(disabled_keys_group)
+        disabled_keys_group.setLayout(disabled_layout)
+        right_layout.addWidget(disabled_keys_group)
         
-        # Save button
-        save_btn = QPushButton("Save Application")
+        # Options group
+        options_group = QGroupBox("Options")
+        options_layout = QVBoxLayout()
+        
+        self.disable_global_check = QCheckBox("Disable global shortcuts for this app")
+        self.disable_global_check.setToolTip("When checked, global shortcuts won't be highlighted for this app")
+        options_layout.addWidget(self.disable_global_check)
+        
+        options_group.setLayout(options_layout)
+        right_layout.addWidget(options_group)
+        
+        # Add panels to splitter
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        
+        # Set initial sizes (2:1 ratio)
+        splitter.setSizes([600, 200])
+        
+        main_layout.addWidget(splitter)
+        
+        # Buttons at bottom
+        button_layout = QHBoxLayout()
+        
+        add_key_btn = QPushButton("Add Key...")
+        add_key_btn.clicked.connect(self.add_key)
+        button_layout.addWidget(add_key_btn)
+        
+        remove_key_btn = QPushButton("Remove Selected")
+        remove_key_btn.clicked.connect(self.remove_selected_key)
+        button_layout.addWidget(remove_key_btn)
+        
+        button_layout.addStretch()
+        
+        save_btn = QPushButton("Save")
         save_btn.clicked.connect(self.save_current_app)
-        app_details_layout.addWidget(save_btn)
+        button_layout.addWidget(save_btn)
         
-        # Add widgets to splitter
-        splitter.addWidget(app_list_widget)
-        splitter.addWidget(app_details_widget)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.close)
+        button_layout.addWidget(cancel_btn)
         
-        # Set splitter sizes (40% left, 60% right)
-        splitter.setSizes([300, 500])
+        main_layout.addLayout(button_layout)
         
-        # Add splitter to main layout
-        layout.addWidget(splitter)
-        
-        # Load the list of applications
-        self.load_app_list()
+        # Load initial app if there are any
+        if self.app_selector.count() > 0:
+            self.app_name_edit.setText(self.app_selector.currentText())
+            self.load_app_shortcuts(self.app_selector.currentText())
     
-    def load_app_list(self):
-        """Load the list of applications with shortcuts"""
-        self.app_list.clear()
+    def create_shortcut_table(self, description):
+        """Create a table for key shortcuts"""
+        # Container widget
+        container = QWidget()
+        layout = QVBoxLayout(container)
         
-        # Add each app to the list
-        for app_name in sorted(self.feature.app_shortcuts.keys()):
-            self.app_list.addItem(app_name)
+        # Description label
+        layout.addWidget(QLabel(description))
+        
+        # Create table
+        table = QTableWidget()
+        table.setColumnCount(1)
+        table.setHorizontalHeaderLabels(["Key Name"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        
+        layout.addWidget(table)
+        
+        return table
     
-    def app_selected(self, current, previous):
-        """Handle application selection"""
-        if not current:
+    def update_color_display(self):
+        """Update the color display widget with the current color"""
+        self.app_color_display.setStyleSheet(
+            f"background-color: rgb({self.app_color.red()}, {self.app_color.green()}, {self.app_color.blue()});"
+        )
+    
+    def select_app_color(self):
+        """Open a color dialog to select the app color"""
+        color = QColorDialog.getColor(self.app_color, self, "Select Application Color")
+        if color.isValid():
+            self.app_color = color
+            self.update_color_display()
+    
+    def add_key(self):
+        """Add a key to the selected table"""
+        # Get the current active tab
+        current_tab = self.findChild(QTabWidget).currentWidget()
+        if not current_tab:
             return
-            
-        app_name = current.text()
-        self.app_name_edit.setText(app_name)
         
-        # Clear all shortcut fields
-        self.default_keys_edit.clear()
-        self.ctrl_keys_edit.clear()
-        self.shift_keys_edit.clear()
-        self.alt_keys_edit.clear()
-        self.ctrl_shift_keys_edit.clear()
-        self.ctrl_alt_keys_edit.clear()
-        self.alt_shift_keys_edit.clear()
-        self.disabled_keys_edit.clear()
+        # Find the table in the current tab
+        table = None
+        for widget in current_tab.findChildren(QTableWidget):
+            table = widget
+            break
         
-        # Set color if available
-        if app_name in self.feature.app_colors:
-            self.app_color_display.setColor(self.feature.app_colors[app_name])
-        else:
-            self.app_color_display.setColor(self.feature.default_color)
+        if not table:
+            return
         
-        # Load app shortcuts
-        self.load_app_shortcuts(app_name)
+        # Show a dialog to enter the key name
+        key_name, ok = QInputDialog.getText(self, "Add Key", "Enter key name:")
+        if ok and key_name:
+            # Add the key to the table
+            row = table.rowCount()
+            table.setRowCount(row + 1)
+            table.setItem(row, 0, QTableWidgetItem(key_name))
+    
+    def remove_selected_key(self):
+        """Remove the selected key from the current table"""
+        # Get the current active tab
+        current_tab = self.findChild(QTabWidget).currentWidget()
+        if not current_tab:
+            return
+        
+        # Find the table in the current tab
+        table = None
+        for widget in current_tab.findChildren(QTableWidget):
+            table = widget
+            break
+        
+        if not table:
+            return
+        
+        # Get selected rows
+        selected_rows = set()
+        for item in table.selectedItems():
+            selected_rows.add(item.row())
+        
+        # Remove rows in reverse order to avoid index shifts
+        for row in sorted(selected_rows, reverse=True):
+            table.removeRow(row)
+    
+    def get_keys_from_table(self, table):
+        """Get all keys from a table as a list"""
+        keys = []
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item and item.text().strip():
+                keys.append(item.text().strip())
+        return keys
     
     def load_app_shortcuts(self, app_name):
         """Load shortcuts for the selected application"""
         if app_name not in self.feature.app_shortcuts:
             return
         
+        # Update app name edit
+        self.app_name_edit.setText(app_name)
+        
+        # Get shortcuts data
         shortcuts = self.feature.app_shortcuts[app_name]
         
+        # Load app color
+        if app_name in self.feature.app_colors:
+            self.app_color = self.feature.app_colors[app_name]
+            self.update_color_display()
+        else:
+            self.app_color = QColor(255, 165, 0)  # Default to orange
+            self.update_color_display()
+        
+        # Load disable global shortcuts option
+        self.disable_global_check.setChecked(
+            self.feature.disable_global_shortcuts_for_app.get(app_name, False)
+        )
+        
+        # Clear all tables
+        self.clear_all_tables()
+        
         # Load default keys
-        if "default_keys" in shortcuts:
-            self.default_keys_edit.setText(",".join(shortcuts["default_keys"]))
+        if "default_keys" in shortcuts and shortcuts["default_keys"]:
+            self.load_keys_to_table(self.default_keys_table, shortcuts["default_keys"])
         
         # Load modifier keys
-        if "Ctrl" in shortcuts:
-            self.ctrl_keys_edit.setText(",".join(shortcuts["Ctrl"]))
-            
-        if "Shift" in shortcuts:
-            self.shift_keys_edit.setText(",".join(shortcuts["Shift"]))
-            
-        if "Alt" in shortcuts:
-            self.alt_keys_edit.setText(",".join(shortcuts["Alt"]))
-            
-        if "Ctrl+Shift" in shortcuts:
-            self.ctrl_shift_keys_edit.setText(",".join(shortcuts["Ctrl+Shift"]))
-            
-        if "Ctrl+Alt" in shortcuts:
-            self.ctrl_alt_keys_edit.setText(",".join(shortcuts["Ctrl+Alt"]))
-        
-        if "Alt+Shift" in shortcuts:
-            self.alt_shift_keys_edit.setText(",".join(shortcuts["Alt+Shift"]))
+        for modifier, table in self.modifier_tables.items():
+            if modifier in shortcuts and shortcuts[modifier]:
+                self.load_keys_to_table(table, shortcuts[modifier])
         
         # Load disabled keys
-        if "disabled_keys" in shortcuts:
-            self.disabled_keys_edit.setText(",".join(shortcuts["disabled_keys"]))
+        if "disabled_keys" in shortcuts and shortcuts["disabled_keys"]:
+            self.disabled_keys_edit.setText(" ".join(shortcuts["disabled_keys"]))
+        else:
+            self.disabled_keys_edit.clear()
+    
+    def clear_all_tables(self):
+        """Clear all tables"""
+        # Clear default keys table
+        self.default_keys_table.setRowCount(0)
+        
+        # Clear modifier tables
+        for table in self.modifier_tables.values():
+            table.setRowCount(0)
+        
+        # Clear disabled keys
+        self.disabled_keys_edit.clear()
+    
+    def load_keys_to_table(self, table, keys):
+        """Load a list of keys into a table"""
+        table.setRowCount(len(keys))
+        for i, key in enumerate(keys):
+            table.setItem(i, 0, QTableWidgetItem(key))
     
     def save_current_app(self):
         """Save the current application configuration"""
@@ -1083,118 +1157,54 @@ class AppShortcutManagerDialog(QDialog):
         shortcuts = {}
         
         # Get default keys
-        default_keys_text = self.default_keys_edit.text().strip()
-        if default_keys_text:
-            shortcuts["default_keys"] = [k.strip() for k in default_keys_text.split(",")]
+        default_keys = self.get_keys_from_table(self.default_keys_table)
+        if default_keys:
+            shortcuts["default_keys"] = default_keys
         
         # Get modifier key combinations
-        ctrl_keys_text = self.ctrl_keys_edit.text().strip()
-        if ctrl_keys_text:
-            shortcuts["Ctrl"] = [k.strip() for k in ctrl_keys_text.split(",")]
-            
-        shift_keys_text = self.shift_keys_edit.text().strip()
-        if shift_keys_text:
-            shortcuts["Shift"] = [k.strip() for k in shift_keys_text.split(",")]
-            
-        alt_keys_text = self.alt_keys_edit.text().strip()
-        if alt_keys_text:
-            shortcuts["Alt"] = [k.strip() for k in alt_keys_text.split(",")]
-            
-        ctrl_shift_keys_text = self.ctrl_shift_keys_edit.text().strip()
-        if ctrl_shift_keys_text:
-            shortcuts["Ctrl+Shift"] = [k.strip() for k in ctrl_shift_keys_text.split(",")]
-            
-        ctrl_alt_keys_text = self.ctrl_alt_keys_edit.text().strip()
-        if ctrl_alt_keys_text:
-            shortcuts["Ctrl+Alt"] = [k.strip() for k in ctrl_alt_keys_text.split(",")]
-        
-        alt_shift_keys_text = self.alt_shift_keys_edit.text().strip()
-        if alt_shift_keys_text:
-            shortcuts["Alt+Shift"] = [k.strip() for k in alt_shift_keys_text.split(",")]
+        for modifier, table in self.modifier_tables.items():
+            keys = self.get_keys_from_table(table)
+            if keys:
+                shortcuts[modifier] = keys
         
         # Get disabled keys
         disabled_keys_text = self.disabled_keys_edit.text().strip()
         if disabled_keys_text:
-            shortcuts["disabled_keys"] = [k.strip() for k in disabled_keys_text.split(",")]
+            shortcuts["disabled_keys"] = [k.strip() for k in disabled_keys_text.split()]
+        
+        # Save the app color
+        self.feature.set_app_color(app_name, self.app_color)
+        
+        # Save disable global shortcuts option
+        self.feature.disable_global_shortcuts_for_app[app_name] = self.disable_global_check.isChecked()
         
         # Save shortcuts
-        self.feature.save_app_shortcuts(app_name, shortcuts)
+        result = self.feature.save_app_shortcuts(app_name, shortcuts)
         
-        # Save color
-        self.feature.app_colors[app_name] = self.app_color_display.color
-        self.feature.save_app_colors()
-        
-        # Refresh list
-        self.load_app_list()
-        
-        # Select the saved app
-        for i in range(self.app_list.count()):
-            if self.app_list.item(i).text() == app_name:
-                self.app_list.setCurrentRow(i)
-                break
-        
-        QMessageBox.information(self, "Saved", f"Shortcuts for '{app_name}' have been saved")
-    
-    def choose_app_color(self):
-        """Choose a highlight color for the application"""
-        color = QColorDialog.getColor(self.app_color_display.color, self, "Select Highlight Color")
-        if color.isValid():
-            self.app_color_display.setColor(color)
-
-    def add_new_app(self):
-        """Add a new application"""
-        self.app_name_edit.clear()
-        self.app_color_display.setColor(self.feature.default_color)
-        self.default_keys_edit.clear()
-        self.ctrl_keys_edit.clear()
-        self.shift_keys_edit.clear()
-        self.alt_keys_edit.clear()
-        self.ctrl_shift_keys_edit.clear()
-        self.ctrl_alt_keys_edit.clear()
-        self.alt_shift_keys_edit.clear()
-        self.disabled_keys_edit.clear()
-    
-    def remove_app(self):
-        """Remove the selected application"""
-        current_item = self.app_list.currentItem()
-        if not current_item:
-            QMessageBox.warning(self, "No Selection", "Please select an application to remove")
-            return
+        if result:
+            # Update the app selector if this is a new app
+            if self.app_selector.findText(app_name) == -1:
+                self.app_selector.addItem(app_name)
+                self.app_selector.setCurrentText(app_name)
             
-        app_name = current_item.text()
-        
-        # Confirm deletion
-        confirm = QMessageBox.question(
-            self, "Confirm Deletion",
-            f"Are you sure you want to delete the shortcuts for '{app_name}'?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.information(self, "Success", f"Shortcuts for '{app_name}' saved successfully")
+        else:
+            QMessageBox.warning(self, "Error", f"Failed to save shortcuts for '{app_name}'")
+    
+    def closeEvent(self, event):
+        """Handle dialog close event"""
+        # Check if there are unsaved changes
+        # This is a simple implementation - you might want to add more sophisticated change tracking
+        reply = QMessageBox.question(
+            self, "Confirm Exit",
+            "Close the shortcut manager? Any unsaved changes will be lost.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         
-        if confirm == QMessageBox.Yes:
-            # Remove from memory
-            if app_name in self.feature.app_shortcuts:
-                del self.feature.app_shortcuts[app_name]
-            
-            if app_name in self.feature.app_colors:
-                del self.feature.app_colors[app_name]
-                
-            # Remove file from disk
-            try:
-                file_path = os.path.join(self.feature.app_shortcuts_dir, f"{app_name}.json")
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                logger.info(f"Removed app shortcut file for {app_name}")
-            except Exception as e:
-                logger.error(f"Error removing app shortcut file: {e}")
-            
-            # Save colors
-            self.feature.save_app_colors()
-            
-            # Refresh list
-            self.load_app_list()
-            
-            QMessageBox.information(self, "Removed", f"Shortcuts for '{app_name}' have been removed")
-
+        if reply == QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
 
 class ShortcutEditorDialog(QDialog):
     def __init__(self, parent, shortcut="", description=""):

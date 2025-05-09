@@ -19,15 +19,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Try to import evdev for system-wide key monitoring
+# Check if evdev is available
 try:
     import evdev
-    from evdev import InputDevice, categorize, ecodes
     EVDEV_AVAILABLE = True
     logger.info("evdev library available for system-wide key monitoring")
 except ImportError:
     EVDEV_AVAILABLE = False
-    logger.warning("evdev library not available, system-wide monitoring will be limited")
+    logger.warning("evdev library not available - limited key monitoring available")
 
 class ShortcutLightingFeature(QObject):
     """
@@ -60,7 +59,7 @@ class ShortcutLightingFeature(QObject):
         self.app_monitor_active = False
         self.currently_pressed_keys = set()
         self.highlighted_keys = []
-        self.last_stable_state = []
+        self.stable_state = []
         self.disable_global_shortcuts = False
         
         # App-specific monitoring
@@ -83,7 +82,7 @@ class ShortcutLightingFeature(QObject):
         
         # Performance optimization fields
         self.last_highlight_update = 0
-        self.highlight_refresh_rate = 0.2  # Update at most 5 times per second
+        self.highlight_refresh_rate = 0.1  # Update at most 10 times per second (increased refresh rate)
         self.key_color_cache = {}
         self.update_pending = False
         self._app_cache = {}  # Cache app-specific shortcut data for faster access
@@ -144,6 +143,21 @@ class ShortcutLightingFeature(QObject):
             'KEY_BACKSLASH': '\\', 'KEY_COMMA': ',', 'KEY_DOT': '.', 'KEY_SLASH': '/',
         }
         
+        # Set of modifier keys for performance optimization
+        self.modifier_keycodes = set([
+            'KEY_LEFTCTRL', 'KEY_RIGHTCTRL',
+            'KEY_LEFTALT', 'KEY_RIGHTALT',
+            'KEY_LEFTSHIFT', 'KEY_RIGHTSHIFT',
+            'KEY_LEFTMETA', 'KEY_RIGHTMETA'
+        ])
+        
+        # Evdev monitor thread
+        self.evdev_thread = None
+        self.evdev_running = False
+
+        # Add global variable to track if we're using evdev directly
+        self.using_direct_evdev = False
+        
     def _initialize_app_cache(self):
         """Initialize cache of app-specific shortcut data for better performance"""
         self._app_cache = {}
@@ -155,8 +169,6 @@ class ShortcutLightingFeature(QObject):
                 'color': self.config_manager.app_colors.get(app_name, self.config_manager.default_color),
                 'has_default_keys': 'default_keys' in shortcuts and shortcuts['default_keys']
             }
-        
-        logger.info(f"Initialized cache for {len(self._app_cache)} applications")
     
     def _update_app_cache(self, app_name):
         """Update the cache for a specific app"""
@@ -179,16 +191,29 @@ class ShortcutLightingFeature(QObject):
     def start_global_monitor(self):
         """Start monitoring global shortcuts."""
         if self.global_monitor_active:
-            logging.debug("Global shortcut monitoring already active.")
             return
             
-        logging.info("Starting global shortcut monitoring.")
         self.global_monitor_active = True
         
         # Save current state before activating global monitoring
         self.save_stable_state()
         self.global_color_cache = {}
         
+        # Start evdev monitoring if available
+        if EVDEV_AVAILABLE:
+            try:
+                # Start evdev monitoring in a thread
+                self.evdev_running = True
+                self.evdev_thread = threading.Thread(target=self._evdev_monitoring_loop, daemon=True)
+                self.evdev_thread.start()
+                self.using_direct_evdev = True
+                return
+            except Exception as e:
+                logger.error(f"Failed to start evdev monitoring: {e}")
+                self.evdev_running = False
+                self.using_direct_evdev = False
+        
+        # Fall back to socket-based monitoring if evdev direct access fails
         # Start socket server to receive key events
         self._start_socket_server()
         
@@ -201,14 +226,20 @@ class ShortcutLightingFeature(QObject):
     def stop_global_monitor(self):
         """Stop monitoring global shortcuts."""
         if not self.global_monitor_active:
-            logging.debug("Global shortcut monitoring already inactive.")
             return
         
-        logging.info("Stopping global shortcut monitoring.")
         self.global_monitor_active = False
         self.currently_pressed_keys.clear()
         
-        # Stop socket server
+        # Stop evdev monitoring if active
+        if self.evdev_running:
+            self.evdev_running = False
+            if self.evdev_thread and self.evdev_thread.is_alive():
+                # Wait for the thread to finish
+                self.evdev_thread.join(1.0)  # Wait up to 1 second
+            self.evdev_thread = None
+        
+        # Stop socket server if running
         self._stop_socket_server()
         
         # Kill helper process if running
@@ -221,6 +252,59 @@ class ShortcutLightingFeature(QObject):
             # Just update the key highlights for the current application
             self.update_key_highlights()
     
+    def _evdev_monitoring_loop(self):
+        """Monitor keyboard events directly using evdev library without root access"""
+        import evdev
+        from evdev import InputDevice, categorize, ecodes
+        import select
+        
+        try:
+            # Find keyboard devices accessible without root (thanks to udev rules)
+            devices = []
+            for path in evdev.list_devices():
+                try:
+                    device = InputDevice(path)
+                    capabilities = device.capabilities()
+                    if ecodes.EV_KEY in capabilities:
+                        devices.append(device)
+                except (PermissionError, OSError):
+                    pass
+            
+            if not devices:
+                logger.error("No usable keyboard devices found - check udev rules")
+                return
+            
+            # Monitor keyboard events
+            while self.evdev_running:
+                # Use select to wait for events with a timeout
+                r, w, x = select.select(devices, [], [], 0.1)
+                
+                # Process events from devices that are ready
+                for device in r:
+                    try:
+                        for event in device.read():
+                            # Only process key events
+                            if event.type == ecodes.EV_KEY:
+                                key_event = categorize(event)
+                                key_code = key_event.keycode
+                                
+                                # We're only interested in modifier keys for performance
+                                if isinstance(key_code, str) and key_code in self.modifier_keycodes:
+                                    if key_event.keystate == 1:  # Key down
+                                        key_name = self.keycode_to_name.get(key_code, key_code)
+                                        self._handle_key_press(key_name)
+                                    elif key_event.keystate == 0:  # Key up
+                                        key_name = self.keycode_to_name.get(key_code, key_code)
+                                        self._handle_key_release(key_name)
+                    except Exception:
+                        pass
+        
+        except Exception as e:
+            logger.error(f"Error in evdev monitoring loop: {e}")
+            
+        finally:
+            self.evdev_running = False
+    
     def _start_socket_server(self):
         """Start a socket server to receive key events from the helper script."""
         if self.socket_running:
@@ -230,8 +314,7 @@ class ShortcutLightingFeature(QObject):
         try:
             if os.path.exists(self.socket_path):
                 os.unlink(self.socket_path)
-        except OSError as e:
-            logging.error(f"Failed to remove existing socket: {e}")
+        except OSError:
             return
             
         try:
@@ -249,10 +332,8 @@ class ShortcutLightingFeature(QObject):
             self.socket_thread = threading.Thread(target=self._socket_listening_loop)
             self.socket_thread.daemon = True
             self.socket_thread.start()
-            
-            logging.info(f"Socket server started on {self.socket_path}")
         except Exception as e:
-            logging.error(f"Failed to start socket server: {e}")
+            logger.error(f"Failed to start socket server: {e}")
             self.socket_running = False
             
     def _stop_socket_server(self):
@@ -270,17 +351,15 @@ class ShortcutLightingFeature(QObject):
         if self.socket_server:
             try:
                 self.socket_server.close()
-            except Exception as e:
-                logging.error(f"Error closing socket server: {e}")
+            except Exception:
+                pass
             
         # Remove socket file
         try:
             if os.path.exists(self.socket_path):
                 os.unlink(self.socket_path)
-        except OSError as e:
-            logging.error(f"Failed to remove socket file: {e}")
-            
-        logging.info("Socket server stopped")
+        except OSError:
+            pass
     
     def _socket_listening_loop(self):
         """Socket listening thread to receive key events from helper script."""
@@ -304,12 +383,11 @@ class ShortcutLightingFeature(QObject):
                             event_data = json.loads(data)
                             self._process_key_event(event_data)
                         except json.JSONDecodeError:
-                            logging.error(f"Invalid JSON received: {data}")
-                        except Exception as e:
-                            logging.error(f"Error processing key event: {e}")
+                            pass
+                        except Exception:
+                            pass
             
-            except Exception as e:
-                logging.error(f"Error in socket listening loop: {e}")
+            except Exception:
                 time.sleep(0.1)  # Prevent tight loop on error
     
     def _process_key_event(self, event_data):
@@ -327,11 +405,8 @@ class ShortcutLightingFeature(QObject):
         # Convert key code to key name
         key_name = self._convert_keycode_to_name(key_code)
         if not key_name:
-            logging.debug(f"Unknown key code: {key_code}")
             return
             
-        logging.debug(f"Received key event: {event_type} {key_name}")
-        
         # Process key press/release
         if event_type == 'press':
             self._handle_key_press(key_name)
@@ -339,14 +414,7 @@ class ShortcutLightingFeature(QObject):
             self._handle_key_release(key_name)
     
     def _convert_keycode_to_name(self, key_code):
-        """Convert evdev key code to key name used in our application.
-        
-        Args:
-            key_code: String or list of strings from evdev (e.g., 'KEY_A')
-            
-        Returns:
-            String with the key name used in our app (e.g., 'a')
-        """
+        """Convert evdev key code to key name used in our application."""
         # Handle case where key_code is a list
         if isinstance(key_code, list):
             key_code = key_code[0] if key_code else None
@@ -365,30 +433,26 @@ class ShortcutLightingFeature(QObject):
                                    'scripts', 'keymon_helper.py')
         
         if not os.path.exists(script_path):
-            logging.error(f"Helper script not found at {script_path}")
             return
             
         # Make helper script executable
         try:
             os.chmod(script_path, 0o755)
-        except OSError as e:
-            logging.error(f"Failed to make helper script executable: {e}")
+        except OSError:
+            pass
             
         # Try to run helper script with pkexec or gksudo
         try:
             # First try pkexec (standard on many distributions)
             cmd = ['pkexec', 'python3', script_path, f'--socket={self.socket_path}']
-            logging.info(f"Starting helper script: {' '.join(cmd)}")
             
             # Run script and detach
             self.helper_process = subprocess.Popen(cmd,
                                                   stdout=subprocess.PIPE,
                                                   stderr=subprocess.PIPE,
                                                   start_new_session=True)
-                                                  
-            logging.info(f"Helper script started with PID {self.helper_process.pid}")
         except Exception as e:
-            logging.error(f"Failed to start helper script: {e}")
+            logger.error(f"Failed to start helper script: {e}")
             
     def _stop_helper_script(self):
         """Stop the helper script if it's running."""
@@ -407,18 +471,19 @@ class ShortcutLightingFeature(QObject):
                 # Force kill if still running
                 if self.helper_process.poll() is None:
                     os.killpg(os.getpgid(self.helper_process.pid), signal.SIGKILL)
-                    
-                logging.info("Helper script terminated")
-            except Exception as e:
-                logging.error(f"Error stopping helper script: {e}")
+            except Exception:
+                pass
                 
         self.helper_process = None
     
     def handle_key_press(self, key_name):
         """Handle a key press event"""
-        # Record key in pressed keys regardless of monitoring state
+        # Skip if already pressed (prevents multiple rapid updates for same key)
+        if key_name in self.currently_pressed_keys:
+            return
+            
+        # Record key in pressed keys
         self.currently_pressed_keys.add(key_name)
-        logger.debug(f"Key press event: {key_name}, monitoring state: global={self.global_monitor_active}, app={self.app_monitor_active}")
         
         # Check if app-specific shortcuts should handle this
         if self.app_monitor_active:
@@ -435,7 +500,6 @@ class ShortcutLightingFeature(QObject):
         
         # Process global shortcut highlighting if enabled
         if self.global_monitor_active:
-            logger.debug(f"Processing global key press: {key_name}")
             # Emit signal for external listeners
             self.key_pressed.emit(key_name)
             # Update the key highlights
@@ -472,177 +536,176 @@ class ShortcutLightingFeature(QObject):
         """
         Highlight keys based on current state. Throttled to prevent excessive update.
         """
-        # Throttle updates to reduce CPU usage
+        # Strict throttling to prevent keyboard resets
         current_time = time.time()
-        if current_time - self.last_highlight_update < self.highlight_refresh_rate:
+        if current_time - self.last_highlight_update < self.highlight_refresh_rate * 2:  # Double the delay
             self.update_pending = True
             if not self.batch_update_timer.isActive():
-                self.batch_update_timer.start(int(self.highlight_refresh_rate * 1000))
+                # Set a longer delay for the batch update
+                self.batch_update_timer.start(int(self.highlight_refresh_rate * 2000))
             return
-
-        # Reset throttling timer
+        
+        # Mark that we're updating now
         self.last_highlight_update = current_time
         self.update_pending = False
         
         # Short circuit if no monitoring active
         if not (self.global_monitor_active or self.app_monitor_active):
-            logger.debug("No monitoring active, skipping highlight update")
             return
         
         # Convert the set of pressed keys to a list
         pressed_keys = list(self.currently_pressed_keys)
-        logger.info(f"Updating highlights for keys: {pressed_keys}")
+        
+        # If only modifiers are pressed, limit to just highlighting the modifiers themselves
+        only_modifiers = True
+        for key in pressed_keys:
+            if key.lower() not in ["ctrl", "shift", "alt", "win", "super", "meta"]:
+                only_modifiers = False
+                break
         
         # Create a list to hold all the keys that should be highlighted
         keys_to_highlight = []
         
-        # Get the keys to highlight from the shortcut manager
-        if pressed_keys:
+        # Special case for just modifiers - don't request full shortcut highlighting
+        if only_modifiers and len(pressed_keys) <= 2:  # 1 or 2 modifiers only
+            keys_to_highlight = pressed_keys
+        else:
+            # Get the keys to highlight from the shortcut manager
             try:
                 # Call the correct method get_keys_to_highlight on the shortcut_manager
                 keys_to_highlight = self.shortcut_manager.get_keys_to_highlight(pressed_keys)
-                logger.info(f"Keys to highlight from shortcut manager: {keys_to_highlight}")
                 
                 # Make sure modifiers themselves are always included
                 for key in pressed_keys:
-                    if key not in keys_to_highlight and key in ["Ctrl", "Shift", "Alt", "Win"]:
+                    if key not in keys_to_highlight and key.lower() in ["ctrl", "shift", "alt", "win"]:
                         keys_to_highlight.append(key)
-            except Exception as e:
-                logger.error(f"Error getting keys to highlight: {e}")
+                        
+                # Limit number of highlighted keys to prevent keyboard overload
+                if len(keys_to_highlight) > 10:
+                    # Keep modifiers and limit other keys
+                    modifiers = [k for k in keys_to_highlight if k.lower() in ["ctrl", "shift", "alt", "win"]]
+                    others = [k for k in keys_to_highlight if k.lower() not in ["ctrl", "shift", "alt", "win"]]
+                    keys_to_highlight = modifiers + others[:8]  # Keep all modifiers plus up to 8 other keys
+                    
+            except Exception:
                 # If there's an error, just highlight the pressed modifiers
-                keys_to_highlight = [key for key in pressed_keys if key in ["Ctrl", "Shift", "Alt", "Win"]]
+                keys_to_highlight = [key for key in pressed_keys if key.lower() in ["ctrl", "shift", "alt", "win"]]
         
         # Clear keyboard first to ensure a clean state
         self.clear_keyboard()
         
-        # Initialize all keys with their appropriate colors
-        keys_highlighted = 0
-        
         # First highlight modifier keys with their specific colors
         for mod_key in ["Ctrl", "Shift", "Alt", "Win"]:
-            if mod_key in pressed_keys:
+            mod_lower = mod_key.lower()
+            pressed_mod = False
+            for pressed in pressed_keys:
+                if pressed.lower() == mod_lower:
+                    pressed_mod = True
+                    break
+                    
+            if pressed_mod:
                 mod_color = self.modifier_colors.get(mod_key, self.default_highlight_color)
-                if self._highlight_key(mod_key, mod_color):
-                    keys_highlighted += 1
-                    logger.debug(f"Highlighted modifier key: {mod_key}")
+                self._highlight_key(mod_key, mod_color)
                 
         # Then highlight other keys with default highlight color
         for key_name in keys_to_highlight:
-            if key_name not in ["Ctrl", "Shift", "Alt", "Win"]:
-                if self._highlight_key(key_name, self.default_highlight_color):
-                    keys_highlighted += 1
-                    logger.debug(f"Highlighted key: {key_name}")
+            if key_name.lower() not in ["ctrl", "shift", "alt", "win"]:
+                self._highlight_key(key_name, self.default_highlight_color)
         
-        logger.info(f"Successfully highlighted {keys_highlighted} keys for global shortcuts")
+        # Send the colors to the keyboard using a more robust method
+        self._send_keyboard_config_safely()
         
-        # Send the colors to the keyboard
-        self._send_keyboard_config()
-    
-    def _send_keyboard_config(self):
-        """Send the current keyboard color configuration to the physical keyboard"""
-        # Create color list from current key colors
-        color_list = []
-        for key in self.keys:
-            color = key.color
-            color_list.append((color.red(), color.green(), color.blue()))
-        
-        # Try multiple methods to send the configuration
-        if self.keyboard.connected:
-            logger.info(f"Sending configuration to keyboard with {len(color_list)} colors")
-            try:
-                # First try with direct method and full intensity
-                self.keyboard.send_led_config(color_list, 1.0)
-                # Log a sample of colors for debugging
-                sample_colors = color_list[:5]
-                logger.info(f"Sample of colors sent: {sample_colors}")
-                return True
-            except Exception as e:
-                logger.error(f"Error sending LED config directly: {e}")
-                
-                # Try alternative methods
-                try:
-                    if hasattr(self.app, 'send_config'):
-                        logger.info("Falling back to app.send_config method")
-                        self.app.send_config()
-                        return True
-                    elif hasattr(self.app, 'keyboard') and hasattr(self.app.keyboard, 'send_led_config'):
-                        logger.info("Trying app.keyboard.send_led_config method")
-                        self.app.keyboard.send_led_config(color_list, 1.0)
-                        return True
-                    else:
-                        logger.error("No fallback method available to send keyboard config")
-                        return False
-                except Exception as e2:
-                    logger.error(f"Error sending config through alternative methods: {e2}")
-                    return False
-        else:
-            logger.warning("Keyboard not connected, attempting to connect")
-            # Try to connect
-            try:
-                if hasattr(self.app, 'connect_to_keyboard'):
-                    if self.app.connect_to_keyboard():
-                        logger.info("Connected to keyboard via app method")
-                        self.keyboard.send_led_config(color_list, 1.0)
-                        return True
-                elif hasattr(self.keyboard, 'connect'):
-                    if self.keyboard.connect():
-                        logger.info("Connected to keyboard via direct method")
-                        self.keyboard.send_led_config(color_list, 1.0)
-                        return True
-            except Exception as e:
-                logger.error(f"Error in connection attempt: {e}")
+    def _send_keyboard_config_safely(self):
+        """Send the current keyboard color configuration to the physical keyboard with error handling"""
+        try:
+            # Create color list from current key colors
+            color_list = []
+            for key in self.keys:
+                color = key.color
+                color_list.append((color.red(), color.green(), color.blue()))
             
-            logger.warning("Keyboard not connected, can't update LEDs")
+            # Try multiple methods to send the configuration
+            if self.keyboard.connected:
+                try:
+                    # First try with direct method and full intensity
+                    self.keyboard.send_led_config(color_list, 1.0)
+                    return True
+                except Exception:
+                    # Try alternative methods
+                    try:
+                        if hasattr(self.app, 'send_config'):
+                            self.app.send_config()
+                            return True
+                        elif hasattr(self.app, 'keyboard') and hasattr(self.app.keyboard, 'send_led_config'):
+                            self.app.keyboard.send_led_config(color_list, 1.0)
+                            return True
+                    except Exception:
+                        # If all methods fail, add a delay to prevent rapid retries
+                        time.sleep(0.1)
+                        return False
+            else:
+                # If not connected, don't try to reconnect here - it's better to let the
+                # main application handle reconnection logic
+                return False
+        except Exception:
+            # Catch all exceptions to prevent crashes
             return False
     
-    def toggle_global_monitoring(self):
-        """Toggle global shortcut monitoring on/off"""
-        if self.global_monitor_active:
-            self.stop_global_monitor()
-            logger.info("Global shortcut monitoring disabled")
-            return False
-        else:
+    def toggle_global_monitoring(self, state=None):
+        """
+        Toggle global shortcut monitoring on/off
+        
+        Args:
+            state: Optional boolean to explicitly set the state. 
+                   If None, the current state is toggled.
+        """
+        if state is None:
+            # Toggle current state
+            if self.global_monitor_active:
+                self.stop_global_monitor()
+            else:
+                self.start_global_monitor()
+        elif state and not self.global_monitor_active:
+            # Explicitly turn monitoring on
             self.start_global_monitor()
-            logger.info("Global shortcut monitoring enabled")
-            return True
+        elif not state and self.global_monitor_active:
+            # Explicitly turn monitoring off
+            self.stop_global_monitor()
+            
+        return self.global_monitor_active
     
     def apply_pending_updates(self):
         """Apply any updates that were throttled due to update_interval"""
         if self.update_pending:
-            logger.debug("Applying pending key highlight updates")
             self.update_key_highlights()
     
     def save_stable_state(self):
         """Save the current keyboard state as the stable state"""
-        self.last_stable_state = []
+        self.stable_state = []
         for key in self.keys:
             color = key.color
-            self.last_stable_state.append((color.red(), color.green(), color.blue()))
-        logger.debug("Saved current keyboard state as stable state")
+            self.stable_state.append((color.red(), color.green(), color.blue()))
     
     def restore_stable_state(self):
         """Restore to the last stable state"""
         try:
             # Check if we have a saved stable state
-            if not self.last_stable_state:
-                logger.debug("No stable state saved, using default config")
+            if not self.stable_state:
                 self.restore_default_config()
                 return
             
             # Restore UI key colors
             for i, key in enumerate(self.keys):
-                if i < len(self.last_stable_state):
-                    r, g, b = self.last_stable_state[i]
+                if i < len(self.stable_state):
+                    r, g, b = self.stable_state[i]
                     key.setKeyColor(QColor(r, g, b))
             
             # Send to keyboard if connected
             if self.keyboard.connected:
-                self.keyboard.send_led_config(self.last_stable_state)
+                self.keyboard.send_led_config(self.stable_state)
                 
-            logger.debug("Restored to stable state")
             return True
-        except Exception as e:
-            logger.error(f"Error restoring stable state: {e}")
+        except Exception:
             # Fallback to default configuration
             self.restore_default_config()
             return False
@@ -658,9 +721,7 @@ class ShortcutLightingFeature(QObject):
                 self.app.send_config()
                 
             return True
-        except Exception as e:
-            logger.error(f"Error restoring default configuration: {e}")
-            
+        except Exception:
             # Try alternative approach if initial method fails
             try:
                 # Try to directly load a default configuration if exists
@@ -674,8 +735,7 @@ class ShortcutLightingFeature(QObject):
                 if self.keyboard.connected:
                     self.app.send_config()
                 return True
-            except Exception as inner_e:
-                logger.error(f"Failed fallback restore: {inner_e}")
+            except Exception:
                 return False
     
     #-------------------------------
@@ -699,8 +759,6 @@ class ShortcutLightingFeature(QObject):
         
         # Enable app-specific shortcuts
         self.disable_global_shortcuts = True
-        
-        logger.info("Application shortcut monitoring started")
     
     def stop_app_monitor(self):
         """Stop monitoring for application-specific shortcuts"""
@@ -711,8 +769,6 @@ class ShortcutLightingFeature(QObject):
             
         # Re-enable global shortcuts
         self.disable_global_shortcuts = False
-        
-        logger.info("Application shortcut monitoring stopped")
         
         # Restore keyboard to stable state
         if not self.global_monitor_active:
@@ -747,7 +803,6 @@ class ShortcutLightingFeature(QObject):
                     # Update current app
                     prev_app = self.current_app
                     self.current_app = app_name
-                    logger.info(f"Active application changed from {prev_app} to: {app_name}")
                     
                     # Emit signal for potential subscribers
                     self.app_changed.emit(app_name)
@@ -755,8 +810,7 @@ class ShortcutLightingFeature(QObject):
                     # Apply app-specific shortcuts
                     self.apply_app_shortcuts(app_name)
                     
-            except Exception as e:
-                logger.error(f"Error in app monitoring loop: {e}")
+            except Exception:
                 time.sleep(1.0)  # Prevent rapid error looping
     
     def get_active_window_name(self):
@@ -782,57 +836,38 @@ class ShortcutLightingFeature(QObject):
             else:
                 return "Unknown"
                 
-        except Exception as e:
-            logger.error(f"Error getting active window: {e}")
+        except Exception:
             return "Unknown"
     
     def apply_app_shortcuts(self, app_name):
         """Apply application-specific shortcuts to the keyboard"""
         try:
-            logger.info(f"Applying shortcuts for {app_name}")
-            
-            # Print debug info first
-            self.debug_keyboard_state()
-            
             # Connect to keyboard if not connected
             if not self.keyboard.connected:
-                logger.info("Keyboard not connected, attempting to connect")
                 try:
                     if hasattr(self.app, 'connect_to_keyboard'):
-                        connected = self.app.connect_to_keyboard()
-                        if connected:
-                            logger.info("Successfully connected to keyboard")
-                        else:
-                            logger.warning("Failed to connect to keyboard")
+                        self.app.connect_to_keyboard()
                     else:
-                        connected = self.keyboard.connect()
-                        if connected:
-                            logger.info("Successfully connected to keyboard")
-                        else:
-                            logger.warning("Failed to connect to keyboard")
-                except Exception as e:
-                    logger.error(f"Error connecting to keyboard: {e}")
+                        self.keyboard.connect()
+                except Exception:
+                    pass
             
             # Check if we have app-specific shortcuts
             if app_name in self._app_cache:
                 # Try applying app-specific shortcuts
                 result = self._apply_app_specific_shortcuts(app_name)
                 if result:
-                    logger.info(f"Successfully applied shortcuts for {app_name}")
                     return True
                 else:
                     # Fall back to default state
-                    logger.info(f"Failed to apply shortcuts for {app_name}, using default state")
                     self.restore_stable_state()
                     return False
             else:
-                logger.info(f"No shortcuts defined for {app_name}, using default state")
                 # Save current state as default if not done already
-                if not self.last_stable_state:
+                if not self.stable_state:
                     self.save_stable_state()
                 return False
-        except Exception as e:
-            logger.error(f"Error applying app shortcuts: {e}", exc_info=True)
+        except Exception:
             # Try to restore to default state as a last resort
             self.restore_stable_state()
             return False
@@ -849,15 +884,10 @@ class ShortcutLightingFeature(QObject):
             has_default_keys = self._app_cache[app_name]['has_default_keys']
             
             if has_default_keys and shortcuts.get("default_keys"):
-                logger.info(f"Highlighting default keys for {app_name}: {shortcuts['default_keys']}")
-                keys_highlighted = 0
-                
                 # Apply highlighting to each key
                 for key_name in shortcuts["default_keys"]:
-                    if key_name and self._highlight_key(key_name, highlight_color):
-                        keys_highlighted += 1
-                
-                logger.info(f"Successfully highlighted {keys_highlighted} out of {len(shortcuts['default_keys'])} default keys")
+                    if key_name:
+                        self._highlight_key(key_name, highlight_color)
                 
                 # Send to keyboard with explicit RGB format
                 color_list = []
@@ -867,63 +897,44 @@ class ShortcutLightingFeature(QObject):
                 
                 # Send with explicit intensity of 1.0
                 if self.keyboard.connected:
-                    logger.info(f"Sending highlighted configuration to keyboard with {len(color_list)} colors")
                     try:
                         # First try with direct method
                         self.keyboard.send_led_config(color_list, 1.0)
-                        
-                        # Additional debugging
-                        sample_colors = color_list[:5]
-                        logger.info(f"Sample of colors sent: {sample_colors}")
-                        
                         return True
-                    except Exception as e:
-                        logger.error(f"Error sending LED config directly: {e}")
-                        
+                    except Exception:
                         # Try alternative method through the app
                         try:
                             if hasattr(self.app, 'send_config'):
-                                logger.info("Falling back to app.send_config method")
                                 self.app.send_config()
                                 return True
                             elif hasattr(self.app, 'keyboard') and hasattr(self.app.keyboard, 'send_led_config'):
-                                logger.info("Trying app.keyboard.send_led_config method")
                                 self.app.keyboard.send_led_config(color_list, 1.0)
                                 return True
                             else:
-                                logger.error("No fallback method available to send keyboard config")
                                 return False
-                        except Exception as e2:
-                            logger.error(f"Error sending config through alternative methods: {e2}")
+                        except Exception:
                             return False
                 else:
-                    logger.warning("Keyboard not connected, attempting to connect")
                     # Last attempt to connect
                     try:
                         if hasattr(self.app, 'connect_to_keyboard'):
                             if self.app.connect_to_keyboard():
-                                logger.info("Connected to keyboard via app method")
                                 self.keyboard.send_led_config(color_list, 1.0)
                                 return True
                         elif hasattr(self.keyboard, 'connect'):
                             if self.keyboard.connect():
-                                logger.info("Connected to keyboard via direct method")
                                 self.keyboard.send_led_config(color_list, 1.0)
                                 return True
-                    except Exception as e:
-                        logger.error(f"Error in final connection attempt: {e}")
+                    except Exception:
+                        pass
                     
-                    logger.warning("Keyboard not connected, can't update LEDs")
                     return False
             else:
-                logger.info(f"No default keys found for {app_name}")
-                
                 # If no default keys, restore to last stable state
                 self.restore_stable_state()
                 return False
                 
-        except Exception as e:
-            logger.error(f"Error applying app-specific shortcuts: {e}", exc_info=True)
+        except Exception:
             # Try to restore default state on error
             self.restore_stable_state()
             return False
@@ -941,7 +952,6 @@ class ShortcutLightingFeature(QObject):
         """
         # Skip empty key names
         if not key_name:
-            logger.warning(f"Invalid key name: {key_name}")
             return False
             
         # Convert tuple to QColor if needed
@@ -949,97 +959,108 @@ class ShortcutLightingFeature(QObject):
             if isinstance(color, (list, tuple)) and len(color) >= 3:
                 color = QColor(color[0], color[1], color[2])
             else:
-                logger.warning(f"Invalid color provided for key {key_name}: {color}")
                 return False
         
-        # Debug - print out first few keys to see what we're working with    
-        if not hasattr(self, '_keys_logged') or not self._keys_logged:
-            self._keys_logged = True
-            if self.keys and len(self.keys) > 0:
-                key_names = [k.key_name for k in self.keys[:20] if hasattr(k, 'key_name')]
-                logger.info(f"Sample key names in layout: {key_names}")
+        # Check if the keys list is initialized
+        if not self.keys:
+            # Try to get keys from keyboard_app if available
+            if hasattr(self.app, 'keys') and self.app.keys:
+                self.keys = self.app.keys
             else:
-                logger.error(f"Keys list is empty or None: {self.keys}")
-                
+                return False
+        
         # Normalize the key name for more flexible matching
         normalized_key_name = key_name.strip()
+        normalized_lower = normalized_key_name.lower()
+        
+        # Try to build a map between controller key names and UI key names if we haven't already
+        if not hasattr(self, '_key_name_map') or not self._key_name_map:
+            # Create a mapping between physical layout names and UI key objects
+            self._key_name_map = {}
             
-        # Try exact match first
+            # First, build a set of all UI key names and their normalizations
+            if self.keys:
+                for key in self.keys:
+                    if hasattr(key, 'key_name'):
+                        # Map key name to itself for direct lookups
+                        self._key_name_map[key.key_name] = key
+                        self._key_name_map[key.key_name.lower()] = key
+            
+            # Add simplified mappings for common keys
+            self._add_simplified_mappings()
+        
+        # Now use our map to find the key to highlight
+        if normalized_key_name in self._key_name_map:
+            ui_key = self._key_name_map[normalized_key_name]
+            ui_key.setKeyColor(color)
+            return True
+        
+        # Try lowercase lookup
+        if normalized_lower in self._key_name_map:
+            ui_key = self._key_name_map[normalized_lower]
+            ui_key.setKeyColor(color)
+            return True
+        
+        # For letter keys, try both uppercase and lowercase
+        if len(normalized_key_name) == 1 and normalized_key_name.isalpha():
+            alt_key_name = normalized_key_name.upper() if normalized_key_name.islower() else normalized_key_name.lower()
+            if alt_key_name in self._key_name_map:
+                ui_key = self._key_name_map[alt_key_name]
+                ui_key.setKeyColor(color)
+                return True
+        
+        # Fall back to direct search if mapping didn't work
+        # Try exact match first (with original case)
         for key in self.keys:
             if hasattr(key, 'key_name') and key.key_name == normalized_key_name:
                 # Apply the color
                 key.setKeyColor(color)
                 return True
         
-        # Try case-insensitive match if exact match failed
+        # Try case-insensitive match
         for key in self.keys:
-            if hasattr(key, 'key_name') and key.key_name.lower() == normalized_key_name.lower():
-                logger.info(f"Found key {key.key_name} with case-insensitive match for {normalized_key_name}")
+            if hasattr(key, 'key_name') and key.key_name.lower() == normalized_lower:
+                # Apply the color
                 key.setKeyColor(color)
                 return True
-                
-        # Handle single character keys - try matching 'a' to 'A' etc.
-        if len(normalized_key_name) == 1:
-            for key in self.keys:
-                if hasattr(key, 'key_name') and key.key_name.lower() == normalized_key_name.lower():
-                    logger.info(f"Found key {key.key_name} with case-insensitive match for {normalized_key_name}")
-                    key.setKeyColor(color)
-                    return True
-                    
-        # For letters, try matching with uppercase or lowercase
-        if normalized_key_name.isalpha() and len(normalized_key_name) == 1:
-            # Try both uppercase and lowercase
-            for variant in [normalized_key_name.upper(), normalized_key_name.lower()]:
-                for key in self.keys:
-                    if hasattr(key, 'key_name') and key.key_name == variant:
-                        logger.info(f"Found key {key.key_name} for {normalized_key_name} (case variant)")
-                        key.setKeyColor(color)
-                        return True
-                
-        # Try special key mappings (keyboard layout might use different names)
-        key_mappings = {
-            'ctrl': ['Ctrl', 'Control', 'CTRL', 'control', 'Control_L', 'Control_R'],
-            'shift': ['Shift', 'SHIFT', 'shift', 'Shift_L', 'Shift_R'],
-            'alt': ['Alt', 'ALT', 'alt', 'Alt_L', 'Alt_R'],
-            'win': ['Win', 'Super', 'META', 'Windows', 'Super_L', 'Super_R', 'windows'],
-            'bksp': ['Bksp', 'Backspace', 'BackSpace', 'backspace'],
-            'esc': ['Esc', 'Escape', 'escape'],
-            'enter': ['Enter', 'Return', 'return'],
-            'tab': ['Tab', 'tab']
-        }
         
-        # Check if our key name is in any of the mappings
-        normalized_lower = normalized_key_name.lower()
-        for base_key, variants in key_mappings.items():
-            if normalized_lower == base_key or normalized_lower in [v.lower() for v in variants]:
-                # Try all the variants
-                for variant in variants:
+        # Special handling for function keys 
+        if normalized_lower.startswith('f') and len(normalized_lower) <= 3:
+            # Check if it's F1-F12
+            try:
+                num = int(normalized_lower[1:])
+                if 1 <= num <= 12:
+                    # Try to find the key as "F1", "F2", etc.
+                    function_key_name = f"F{num}"
                     for key in self.keys:
-                        if hasattr(key, 'key_name') and key.key_name == variant:
-                            logger.info(f"Found key {key.key_name} using mapping variant for {normalized_key_name}")
+                        if hasattr(key, 'key_name') and key.key_name == function_key_name:
                             key.setKeyColor(color)
                             return True
-        
-        # For letter keys, try both uppercase and lowercase
-        if len(normalized_key_name) == 1 and normalized_key_name.isalpha():
-            alt_key_name = normalized_key_name.upper() if normalized_key_name.islower() else normalized_key_name.lower()
-            for key in self.keys:
-                if hasattr(key, 'key_name') and key.key_name == alt_key_name:
-                    logger.info(f"Found key {key.key_name} as variant for {normalized_key_name}")
-                    key.setKeyColor(color)
-                    return True
-        
-        # Final fallback for special cases
-        if normalized_lower == 'c' or normalized_lower == 'v' or normalized_lower == 'x':
-            # Find the exact matching key
-            for key in self.keys:
-                if hasattr(key, 'key_name') and key.key_name.lower() == normalized_lower:
-                    logger.info(f"Found key {key.key_name} as special case for {normalized_key_name}")
-                    key.setKeyColor(color)
-                    return True
+            except ValueError:
+                pass
                     
-        logger.warning(f"Key not found in layout: {key_name}")
         return False
+    
+    def _add_simplified_mappings(self):
+        """Add simplified mappings for common keys to improve performance"""
+        # Common modifier key mappings
+        self._key_name_map.update({
+            'ctrl': self._find_key_by_name('Ctrl'),
+            'control': self._find_key_by_name('Ctrl'),
+            'shift': self._find_key_by_name('Shift'),
+            'alt': self._find_key_by_name('Alt'),
+            'win': self._find_key_by_name('Win'),
+            'super': self._find_key_by_name('Win'),
+            'meta': self._find_key_by_name('Win')
+        })
+        
+    def _find_key_by_name(self, key_name):
+        """Helper to find a key object by name"""
+        for key in self.keys:
+            if hasattr(key, 'key_name'):
+                if key.key_name == key_name or key.key_name.lower() == key_name.lower():
+                    return key
+        return None
     
     def handle_app_key_press(self, key_name):
         """Handle a key press event for app-specific shortcuts"""
@@ -1055,8 +1076,6 @@ class ShortcutLightingFeature(QObject):
             
             # Get the list of currently pressed modifier keys
             pressed_modifiers = list(self.currently_pressed_keys)
-            logger.debug(f"App shortcuts handling key press: {key_name}")
-            logger.debug(f"Currently pressed keys: {pressed_modifiers}")
             
             # Filter to keep only actual modifiers (case-insensitive)
             real_modifiers = []
@@ -1073,7 +1092,6 @@ class ShortcutLightingFeature(QObject):
             if real_modifiers:
                 # Create lookup key based on sorted modifiers
                 modifiers_key = "+".join(sorted(real_modifiers))
-                logger.debug(f"Looking for shortcuts with modifier key: {modifiers_key}")
                 
                 # Check if we have this modifier combination for the current app
                 shortcuts = self._app_cache[self.current_app]['shortcuts']
@@ -1081,14 +1099,12 @@ class ShortcutLightingFeature(QObject):
                 # Try exact match first
                 if modifiers_key in shortcuts:
                     # We found an app-specific shortcut for this modifier combo!
-                    logger.info(f"Found shortcuts for {modifiers_key} in {self.current_app}")
                     self._highlight_app_shortcut_keys(modifiers_key, shortcuts[modifiers_key])
                     return True  # Handled by app-specific shortcuts
                 
                 # Try case-insensitive match
                 for shortcut_key in shortcuts:
                     if shortcut_key.lower() == modifiers_key.lower() and shortcut_key != "default_keys":
-                        logger.info(f"Found shortcuts for {shortcut_key} in {self.current_app} (case-insensitive match)")
                         self._highlight_app_shortcut_keys(shortcut_key, shortcuts[shortcut_key])
                         return True
             
@@ -1097,14 +1113,11 @@ class ShortcutLightingFeature(QObject):
             if "default_keys" in self._app_cache[self.current_app]['shortcuts']:
                 # If modifiers are pressed but we don't have specific shortcuts for them,
                 # still highlight the default keys
-                logger.info(f"No specific shortcuts for modifiers, using default keys")
                 self._highlight_app_shortcut_keys("default", self._app_cache[self.current_app]['shortcuts']["default_keys"])
                 return True
             
-            logger.debug(f"No shortcuts found for {key_name} in {self.current_app}")
             return False  # Let global shortcuts handle it
-        except Exception as e:
-            logger.error(f"Error handling key press: {e}", exc_info=True)
+        except Exception:
             return False  # On error, fall back to global shortcuts
     
     def _highlight_app_shortcut_keys(self, modifier_key, keys_to_highlight):
@@ -1118,7 +1131,6 @@ class ShortcutLightingFeature(QObject):
         try:
             # Validate input
             if not keys_to_highlight or not isinstance(keys_to_highlight, list):
-                logger.warning(f"Empty or invalid keys_to_highlight: {keys_to_highlight}")
                 # Fall back to default if keys list is empty or invalid
                 self.restore_stable_state()
                 return
@@ -1138,23 +1150,15 @@ class ShortcutLightingFeature(QObject):
             disabled_keys = []
             if "disabled_keys" in shortcuts and shortcuts["disabled_keys"]:
                 disabled_keys = [k.lower() for k in shortcuts["disabled_keys"]]
-                logger.info(f"Found disabled keys for {self.current_app}: {disabled_keys}")
             
             # Filter out disabled keys
             if disabled_keys:
-                original_count = len(keys_to_highlight)
                 keys_to_highlight = [k for k in keys_to_highlight if k.lower() not in disabled_keys]
-                if len(keys_to_highlight) < original_count:
-                    logger.info(f"Filtered out {original_count - len(keys_to_highlight)} disabled keys")
             
             # If we still have no valid keys, fall back to default state
             if not keys_to_highlight:
-                logger.warning(f"No valid keys to highlight for {modifier_key} in {self.current_app}")
                 self.restore_stable_state()
                 return
-            
-            # Track how many keys we're highlighting
-            keys_highlighted = 0
             
             # Highlight modifier keys if this isn't the default keySet
             if modifier_key != "default":
@@ -1170,33 +1174,21 @@ class ShortcutLightingFeature(QObject):
                     
                     # Skip disabled modifier keys
                     if mod_name.lower() in disabled_keys:
-                        logger.info(f"Skipping disabled modifier key: {mod_name}")
                         continue
                     
                     # Get the color for this modifier
                     mod_color = self.get_modifier_color(mod_name)
-                    logger.info(f"Highlighting modifier key {mod_name} with color {mod_color.name()}")
-                    if self._highlight_key(mod_name, mod_color):
-                        keys_highlighted += 1
-                    else:
-                        logger.warning(f"Failed to highlight modifier key: {mod_name}")
+                    self._highlight_key(mod_name, mod_color)
             
             # Highlight the specified keys
             for key in keys_to_highlight:
                 if key and isinstance(key, str):
-                    logger.info(f"Highlighting key {key} with color {highlight_color.name() if hasattr(highlight_color, 'name') else highlight_color}")
-                    if self._highlight_key(key, highlight_color):
-                        keys_highlighted += 1
-                    else:
-                        logger.warning(f"Failed to highlight key: {key}")
-            
-            logger.info(f"Successfully highlighted {keys_highlighted} out of {len(keys_to_highlight)} keys")
+                    self._highlight_key(key, highlight_color)
             
             # Send to keyboard using the centralized method
             return self._send_keyboard_config()
                 
-        except Exception as e:
-            logger.error(f"Error highlighting app shortcut keys: {e}", exc_info=True)
+        except Exception:
             # Fall back to default state on error
             QTimer.singleShot(100, self.restore_stable_state)
             return False
@@ -1228,19 +1220,16 @@ class ShortcutLightingFeature(QObject):
                     
                     if has_default_keys:
                         # App has default keys - restore them
-                        logger.info(f"All modifier keys released, restoring default keys for {self.current_app}")
                         # Use a timer instead of a thread
                         QTimer.singleShot(int(delay * 1000), 
                             lambda: self._highlight_app_shortcut_keys("default", shortcuts["default_keys"]))
                         return True
                     else:
                         # No default keys for this app - restore to stable state
-                        logger.info(f"All modifier keys released, no default keys for {self.current_app}")
                         QTimer.singleShot(int(delay * 1000), self.restore_stable_state)
                         return True
                 else:
                     # No app-specific shortcuts - restore stable state
-                    logger.info("All modifier keys released, restoring to stable state")
                     # Use a slightly longer delay
                     QTimer.singleShot(100, self.restore_stable_state)
                     return True
@@ -1248,8 +1237,7 @@ class ShortcutLightingFeature(QObject):
             # If modifiers are still pressed, let the system handle it
             return False
             
-        except Exception as e:
-            logger.error(f"Error handling app key release: {e}", exc_info=True)
+        except Exception:
             # In case of error, restore to default state
             self.restore_stable_state()
             return False
@@ -1288,107 +1276,7 @@ class ShortcutLightingFeature(QObject):
         for key in self.keys:
             key.setKeyColor(QColor(0, 0, 0))
         return True
-    
-    def debug_keyboard_state(self):
-        """Debug method to print information about the keyboard state"""
-        try:
-            logger.info("===== KEYBOARD STATE DEBUG =====")
-            # Check keyboard connection
-            logger.info(f"Keyboard connected: {self.keyboard.connected}")
-            
-            # Check keyboard controller reference
-            # The self.keyboard should be the KeyboardController instance
-            if hasattr(self.app, 'keyboard') and hasattr(self.app.keyboard, 'connected'):
-                logger.info("Keyboard controller from app: available")
-                logger.info(f"App keyboard connected: {self.app.keyboard.connected}")
-            else:
-                logger.warning("App keyboard controller not accessible or not initialized")
-            
-            # Check if keyboard controller exists and is initialized
-            logger.info(f"Keyboard controller: {self.keyboard.__class__.__name__}")
-            
-            # Check if we have keys to manipulate
-            logger.info(f"Number of keys in layout: {len(self.keys)}")
-            
-            # Sample some key colors for verification
-            if self.keys:
-                logger.info("Sample key colors:")
-                for i in range(min(5, len(self.keys))):
-                    key = self.keys[i]
-                    logger.info(f"Key {key.key_name}: RGB({key.color.red()}, {key.color.green()}, {key.color.blue()})")
-                    
-                # Log key names for reference and debugging key mapping issues
-                key_names_sample = [k.key_name for k in self.keys[:20] if hasattr(k, 'key_name')]
-                logger.info(f"Sample key names in layout: {key_names_sample}")
-            
-            # Check app_monitor_active state
-            logger.info(f"App monitoring active: {self.app_monitor_active}")
-            logger.info(f"Global monitoring active: {self.global_monitor_active}")
-            logger.info(f"Current app: {self.current_app}")
-            logger.info(f"Currently pressed keys: {list(self.currently_pressed_keys)}")
-            
-            # Check shortcut manager state
-            logger.info(f"Shortcut manager initialized: {hasattr(self, 'shortcut_manager')}")
-            if hasattr(self, 'shortcut_manager'):
-                logger.info(f"Active shortcuts: {self.shortcut_manager.active_shortcuts}")
-                
-                # Test key highlighting for common shortcuts
-                test_keys = ["ctrl", "shift", "c", "v"]
-                logger.info(f"TEST: Keys to highlight for {test_keys}: {self.shortcut_manager.get_keys_to_highlight(test_keys)}")
-            
-            # Check update throttling
-            logger.info(f"Last highlight update: {self.last_highlight_update}")
-            logger.info(f"Update pending: {self.update_pending}")
-            logger.info(f"Highlight refresh rate: {self.highlight_refresh_rate}")
-            
-            # Check if we have a valid app cache entry
-            if self.current_app in self._app_cache:
-                logger.info(f"App cache entry exists for {self.current_app}")
-                logger.info(f"Has default keys: {self._app_cache[self.current_app]['has_default_keys']}")
-                shortcuts = self._app_cache[self.current_app]['shortcuts']
-                logger.info(f"Default keys: {shortcuts.get('default_keys', 'None')}")
-            else:
-                logger.info(f"No app cache entry for {self.current_app}")
-                
-            # Check if keyboard send_led_config method is available
-            if hasattr(self.keyboard, 'send_led_config'):
-                logger.info("send_led_config method available on keyboard controller")
-            else:
-                logger.warning("No send_led_config method found on keyboard controller")
-                
-            # Check if app send_config method is available
-            if hasattr(self.app, 'send_config'):
-                logger.info("send_config method available on app")
-            else:
-                logger.warning("No send_config method found on app")
-            
-            # Check stable state
-            logger.info(f"Has stable state saved: {bool(self.last_stable_state)}")
-            if self.last_stable_state:
-                logger.info(f"Stable state length: {len(self.last_stable_state)}")
-            
-            # Check evdev status
-            logger.info(f"Evdev available: {EVDEV_AVAILABLE}")
-            logger.info(f"Socket server running: {self.socket_running}")
-            if hasattr(self, 'helper_process') and self.helper_process:
-                logger.info(f"Helper process running: {self.helper_process.poll() is None}")
-                if self.helper_process.poll() is not None:
-                    logger.info(f"Helper process exit code: {self.helper_process.poll()}")
-            else:
-                logger.info("No helper process started")
-                
-            # Test highlight key method with some common keys
-            logger.info("Testing key highlighting:")
-            for test_key in ["Ctrl", "C", "V", "Shift", "A"]:
-                result = self._highlight_key(test_key, QColor(255, 0, 0))  # Test with red color
-                logger.info(f"Test highlight {test_key}: {result}")
-                # Reset to black after test
-                self._highlight_key(test_key, QColor(0, 0, 0))
-                
-            logger.info("================================")
-        except Exception as e:
-            logger.error(f"Error in debug_keyboard_state: {e}", exc_info=True)
-    
+
     def set_modifier_color(self, modifier, color):
         """Set a custom color for a specific modifier key"""
         self.modifier_colors[modifier] = color
@@ -1421,15 +1309,28 @@ class ShortcutLightingFeature(QObject):
         
         if has_default_keys:
             # Apply app-specific default keys
-            logger.info(f"Highlighting default keys for {self.current_app}: {shortcuts['default_keys']}")
             # Ensure default_keys is not None before highlighting
             if shortcuts["default_keys"]:
                 self._highlight_app_shortcut_keys("default", shortcuts["default_keys"])
                 return True
             else:
-                logger.warning(f"Default keys for {self.current_app} is None or empty")
                 return False
         else:
             # No default keys defined for this app
-            logger.info(f"No default keys found for {self.current_app}")
             return False
+
+    def _handle_key_press(self, key_name):
+        """Internal method to handle key press events, called from evdev monitoring.
+        This delegates to the public handle_key_press method.
+        """
+        return self.handle_key_press(key_name)
+    
+    def _handle_key_release(self, key_name):
+        """Internal method to handle key release events, called from evdev monitoring.
+        This delegates to the public handle_key_release method.
+        """
+        return self.handle_key_release(key_name)
+
+    def is_global_monitoring_active(self):
+        """Returns whether global shortcut monitoring is currently active"""
+        return self.global_monitor_active

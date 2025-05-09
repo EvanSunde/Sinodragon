@@ -9,7 +9,7 @@ import threading
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                            QSplitter, QComboBox, QLineEdit, QPushButton, QLabel,
                            QMessageBox, QAction, QMenu, QSystemTrayIcon, QApplication,
-                           QColorDialog)
+                           QColorDialog, QTableWidget, QTableWidgetItem, QDialog)
 from PyQt5.QtCore import Qt, QTimer, QEvent
 from PyQt5.QtGui import QColor
 import colorsys
@@ -308,7 +308,13 @@ class KeyboardConfigApp(QMainWindow):
         """Toggle shortcut monitoring from system tray"""
         if self.is_monitoring_shortcuts:
             # Stop monitoring
-            self.stop_global_shortcut_monitor()
+            if hasattr(self, 'shortcut_lighting'):
+                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
+                    self.shortcut_lighting.stop_global_monitor()
+                    logger.info("Stopped global shortcut monitoring")
+                else:
+                    self.shortcut_lighting.stop_monitor()
+            
             self.is_monitoring_shortcuts = False
             self.tray_shortcut_action.setText("Start Shortcut Monitoring")
             self.tray_icon.showMessage(
@@ -317,9 +323,18 @@ class KeyboardConfigApp(QMainWindow):
                 QSystemTrayIcon.Information,
                 2000
             )
+            
+            # Update GUI elements if visible
+            self._update_control_panel_state()
         else:
             # Start monitoring
-            self.start_global_shortcut_monitor()
+            if hasattr(self, 'shortcut_lighting'):
+                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
+                    self.shortcut_lighting.start_global_monitor()
+                    logger.info("Started global shortcut monitoring")
+                else:
+                    self.shortcut_lighting.start_monitor()
+            
             self.is_monitoring_shortcuts = True
             self.tray_shortcut_action.setText("Stop Shortcut Monitoring")
             self.tray_icon.showMessage(
@@ -329,11 +344,43 @@ class KeyboardConfigApp(QMainWindow):
                 2000
             )
             
-            # Update GUI if it's visible
-            control_panel = self._get_control_panel()
-            if control_panel and hasattr(control_panel, 'shortcut_toggle') and self.isVisible():
-                control_panel.shortcut_toggle.setChecked(True)
+            # Update GUI elements if visible
+            self._update_control_panel_state()
+    
+    def _update_control_panel_state(self):
+        """Update control panel elements to reflect current state"""
+        # Update shortcut toggle button if it exists and is visible
+        control_panel = self._get_control_panel()
+        if control_panel and hasattr(control_panel, 'shortcut_toggle'):
+            control_panel.shortcut_toggle.setChecked(self.is_monitoring_shortcuts)
+            if self.is_monitoring_shortcuts:
                 control_panel.shortcut_toggle.setText("Stop Shortcut Monitor")
+            else:
+                control_panel.shortcut_toggle.setText("Start Shortcut Monitor")
+    
+    def start_global_shortcut_monitor(self):
+        """Start global shortcut monitoring"""
+        if hasattr(self, 'shortcut_lighting'):
+            if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
+                self.shortcut_lighting.start_global_monitor()
+                logger.info("Started global shortcut monitoring")
+            else:
+                self.shortcut_lighting.start_monitor()
+            
+            self.is_monitoring_shortcuts = True
+            self._update_control_panel_state()
+    
+    def stop_global_shortcut_monitor(self):
+        """Stop global shortcut monitoring"""
+        if hasattr(self, 'shortcut_lighting'):
+            if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
+                self.shortcut_lighting.stop_global_monitor()
+                logger.info("Stopped global shortcut monitoring")
+            else:
+                self.shortcut_lighting.stop_monitor()
+            
+            self.is_monitoring_shortcuts = False
+            self._update_control_panel_state()
     
     def toggle_daemon_mode(self):
         """Toggle daemon mode (shortcut monitoring only)"""
@@ -817,18 +864,6 @@ class KeyboardConfigApp(QMainWindow):
         dialog = ModifierColorsDialog(self, self.shortcut_lighting)
         dialog.exec_()
     
-    def start_global_shortcut_monitor(self):
-        """Start global shortcut monitoring"""
-        if hasattr(self, 'shortcut_lighting'):
-            self.shortcut_lighting.start_global_monitor()
-            logger.info("Global shortcut monitoring started")
-    
-    def stop_global_shortcut_monitor(self):
-        """Stop the global shortcut monitoring"""
-        if hasattr(self, 'shortcut_lighting'):
-            self.shortcut_lighting.stop_global_monitor()
-            logger.info("Global shortcut monitoring stopped")
-    
     # App shortcut methods
     def toggle_app_shortcuts(self):
         """Toggle application-specific shortcut highlighting"""
@@ -867,11 +902,16 @@ class KeyboardConfigApp(QMainWindow):
     # Utility methods
     def save_keyboard_layout(self):
         """Save the keyboard layout to the configuration file"""
-        from ui.key_mapping import DEFAULT_LAYOUT
-        
-        # Save to configuration file
-        self.shortcut_manager.save_keyboard_layout(DEFAULT_LAYOUT)
-        self.statusBar().showMessage("Keyboard layout saved to configuration")
+        if hasattr(self, 'shortcut_manager'):
+            # Get the layout definition from the keyboard controller
+            if hasattr(self.keyboard, 'layout_def'):
+                layout_matrix = self.keyboard.layout_def
+                
+                # Save to configuration file
+                self.shortcut_manager.save_keyboard_layout(layout_matrix)
+                self.statusBar().showMessage("Keyboard layout saved to configuration")
+            else:
+                self.statusBar().showMessage("Error: Keyboard layout not found")
     
     def closeEvent(self, event):
         """Handle application close event"""
@@ -1106,4 +1146,204 @@ class KeyboardConfigApp(QMainWindow):
             # Check keyboard status
             logger.info(f"Keyboard connected: {self.keyboard.connected}")
         except Exception as e:
-            logger.error(f"Error in debug_shortcut_lighting: {e}", exc_info=True) 
+            logger.error(f"Error in debug_shortcut_lighting: {e}", exc_info=True)
+
+    def manage_shortcuts(self):
+        """Open a dialog to manage keyboard shortcuts"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manage Shortcut Highlighting")
+        dialog.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Instructions
+        layout.addWidget(QLabel("Configure which keys light up when modifier keys are pressed:"))
+        
+        # Create table to display shortcuts
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Modifier", "Keys to Highlight"])
+        
+        # Add shortcuts to table
+        if hasattr(self, 'shortcut_manager'):
+            shortcuts = self.shortcut_manager.active_shortcuts
+            table.setRowCount(len(shortcuts))
+            
+            row = 0
+            for modifier, keys in shortcuts.items():
+                modifier_item = QTableWidgetItem(modifier)
+                keys_item = QTableWidgetItem(" ".join(keys))
+                
+                table.setItem(row, 0, modifier_item)
+                table.setItem(row, 1, keys_item)
+                row += 1
+        else:
+            logger.error("No shortcut manager available")
+        
+        table.resizeColumnsToContents()
+        layout.addWidget(table)
+        
+        # Add buttons for add/remove/edit
+        button_layout = QHBoxLayout()
+        
+        add_btn = QPushButton("Add New")
+        add_btn.clicked.connect(lambda: self.add_edit_shortcut(table))
+        button_layout.addWidget(add_btn)
+        
+        edit_btn = QPushButton("Edit Selected")
+        edit_btn.clicked.connect(lambda: self.add_edit_shortcut(table, edit=True))
+        button_layout.addWidget(edit_btn)
+        
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(lambda: self.remove_shortcut(table))
+        button_layout.addWidget(remove_btn)
+        
+        restore_defaults_btn = QPushButton("Restore Defaults")
+        restore_defaults_btn.clicked.connect(lambda: self.restore_default_shortcuts(table))
+        button_layout.addWidget(restore_defaults_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Save layout button
+        save_layout_btn = QPushButton("Save Keyboard Layout")
+        save_layout_btn.clicked.connect(self.save_keyboard_layout)
+        layout.addWidget(save_layout_btn)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        dialog.exec_()
+
+    def add_edit_shortcut(self, table, edit=False):
+        """Add a new shortcut or edit existing one"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Shortcut Highlighting" if not edit else "Edit Shortcut Highlighting")
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Modifier field
+        modifier_layout = QHBoxLayout()
+        modifier_layout.addWidget(QLabel("Modifier Key(s):"))
+        modifier_input = QLineEdit()
+        modifier_layout.addWidget(modifier_input)
+        layout.addLayout(modifier_layout)
+        
+        # Keys field
+        keys_layout = QHBoxLayout()
+        keys_layout.addWidget(QLabel("Keys to Highlight (space-separated):"))
+        keys_input = QLineEdit()
+        keys_layout.addWidget(keys_input)
+        layout.addLayout(keys_layout)
+        
+        # Help text
+        layout.addWidget(QLabel("Examples:\nCtrl\nCtrl+Shift\nWin"))
+        layout.addWidget(QLabel("Highlight Keys Examples: A B C D E F"))
+        
+        # If editing, populate fields with selected shortcut
+        if edit:
+            selected_row = table.currentRow()
+            if selected_row >= 0:
+                modifier = table.item(selected_row, 0).text()
+                keys = table.item(selected_row, 1).text()
+                
+                modifier_input.setText(modifier)
+                keys_input.setText(keys)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("Save")
+        cancel_btn = QPushButton("Cancel")
+        
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Connect buttons
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        def save_shortcut_handler():
+            self.save_shortcut(modifier_input.text(), keys_input.text(), table, dialog)
+        
+        save_btn.clicked.connect(save_shortcut_handler)
+        
+        dialog.exec_()
+
+    def save_shortcut(self, modifier, keys_text, table, dialog):
+        """Save the shortcut to the manager and update table"""
+        if not modifier or not keys_text:
+            QMessageBox.warning(self, "Error", "Modifier and keys cannot be empty.")
+            return
+        
+        # Split the keys text into individual keys
+        key_list = [k.strip() for k in keys_text.split()]
+        
+        # Save to manager
+        if hasattr(self, 'shortcut_manager'):
+            self.shortcut_manager.add_shortcut(modifier, key_list)
+            
+            # Refresh table
+            shortcuts = self.shortcut_manager.active_shortcuts
+            table.setRowCount(len(shortcuts))
+            
+            row = 0
+            for mod, keys in shortcuts.items():
+                mod_item = QTableWidgetItem(mod)
+                keys_item = QTableWidgetItem(" ".join(keys))
+                
+                table.setItem(row, 0, mod_item)
+                table.setItem(row, 1, keys_item)
+                row += 1
+                
+            # Close dialog
+            dialog.accept()
+        else:
+            QMessageBox.warning(self, "Error", "Shortcut manager not initialized")
+
+    def remove_shortcut(self, table):
+        """Remove the selected shortcut"""
+        selected_row = table.currentRow()
+        if selected_row >= 0:
+            modifier = table.item(selected_row, 0).text()
+            
+            # Confirm deletion
+            confirm = QMessageBox.question(
+                self, "Confirm Deletion", 
+                f"Are you sure you want to delete the shortcut '{modifier}'?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if confirm == QMessageBox.Yes and hasattr(self, 'shortcut_manager'):
+                # Remove from manager
+                self.shortcut_manager.remove_shortcut(modifier)
+                
+                # Remove from table
+                table.removeRow(selected_row)
+
+    def restore_default_shortcuts(self, table):
+        """Restore default shortcuts"""
+        confirm = QMessageBox.question(
+            self, "Confirm Reset", 
+            "Are you sure you want to restore default shortcuts? This will overwrite any custom shortcuts.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes and hasattr(self, 'shortcut_manager'):
+            # Reset shortcuts in manager
+            self.shortcut_manager.reset_to_defaults()
+            
+            # Refresh table
+            shortcuts = self.shortcut_manager.active_shortcuts
+            table.setRowCount(len(shortcuts))
+            
+            row = 0
+            for mod, keys in shortcuts.items():
+                mod_item = QTableWidgetItem(mod)
+                keys_item = QTableWidgetItem(" ".join(keys))
+                
+                table.setItem(row, 0, mod_item)
+                table.setItem(row, 1, keys_item)
+                row += 1 
