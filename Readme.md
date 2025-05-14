@@ -18,6 +18,11 @@ This uses direct mode in Redragon keybaord to change the LED lightening.
 - Configuration saving and loading
 - Hot-reload support
 - Device information display
+- Active app awareness (Linux + Hyprland only): Automatically detects the currently active application and highlights relevant keybindings. For example, when Control is pressed while using Firefox, it lights up keys like A, S, C, V, N that are commonly bound to Ctrl shortcuts in that app.
+- ~~Global keybinds highlighting~~ (currently bugged in some branches, fix comming soon)
+
+https://github.com/user-attachments/assets/d39c23b7-01fb-4668-b97f-6f13a5674257
+
 
 ## Requirements
 
