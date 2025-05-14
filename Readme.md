@@ -9,6 +9,8 @@ Note: I only made this because OpenRGB didn't support redgraon keybaord. It only
 ## Features
 This uses direct mode in Redragon keybaord to change the LED lightening.
 
+NOTE: Use checkout branch for now
+
 - Visual keyboard layout representation
 - Color picker for individual keys
 - Preset color schemes
