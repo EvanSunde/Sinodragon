@@ -1,0 +1,55 @@
+2025-08-16 22:01:48 - config_manager - INFO - Using global config dir: /home/evan/.config/sinodragon
+2025-08-16 22:01:48 - shortcut_manager - INFO - Using global config directory: /home/evan/.config/sinodragon
+2025-08-16 22:01:48 - shortcut_manager - INFO - Loaded shortcuts from /home/evan/.config/sinodragon/shortcuts.json
+2025-08-16 22:01:48 - shortcut_manager - INFO - Loaded keyboard layout from /home/evan/.config/sinodragon/keyboard_layout.json
+2025-08-16 22:01:48 - features.app_shortcuts - INFO - Loaded shortcuts for 6 applications
+2025-08-16 22:01:49 - keyboard_controller - INFO - Attempting to connect to keyboard with VID:258a PID:0049
+2025-08-16 22:01:49 - keyboard_controller - INFO - Found 9 matching devices
+2025-08-16 22:01:49 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw1', Interface=0, Usage=6, Usage Page=1
+2025-08-16 22:01:49 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=128, Usage Page=1
+2025-08-16 22:01:49 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=12
+2025-08-16 22:01:49 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=65280
+2025-08-16 22:01:49 - keyboard_controller - INFO - Found target device with LED control interface
+2025-08-16 22:01:49 - keyboard_controller - INFO - Connected to device: Manufacturer: BY Tech, Product: Gaming Keyboard, Serial: 
+2025-08-16 22:02:07 - ui.main_window - INFO - Stopped global shortcut monitoring
+2025-08-16 22:02:07 - keyboard_controller - INFO - Disconnecting from keyboard VID:258a PID:0049
+2025-08-16 22:02:07 - keyboard_controller - INFO - Disconnected from the keyboard
+2025-08-16 22:05:39 - config_manager - INFO - Using global config dir: /home/evan/.config/sinodragon
+2025-08-16 22:05:39 - shortcut_manager - INFO - Using global config directory: /home/evan/.config/sinodragon
+2025-08-16 22:05:39 - shortcut_manager - INFO - Loaded shortcuts from /home/evan/.config/sinodragon/shortcuts.json
+2025-08-16 22:05:39 - shortcut_manager - INFO - Loaded keyboard layout from /home/evan/.config/sinodragon/keyboard_layout.json
+2025-08-16 22:05:39 - features.app_shortcuts - INFO - Loaded shortcuts for 6 applications
+2025-08-16 22:05:39 - keyboard_controller - INFO - Attempting to connect to keyboard with VID:258a PID:0049
+2025-08-16 22:05:39 - keyboard_controller - INFO - Found 9 matching devices
+2025-08-16 22:05:39 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw1', Interface=0, Usage=6, Usage Page=1
+2025-08-16 22:05:39 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=128, Usage Page=1
+2025-08-16 22:05:39 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=12
+2025-08-16 22:05:39 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=65280
+2025-08-16 22:05:39 - keyboard_controller - INFO - Found target device with LED control interface
+2025-08-16 22:05:39 - keyboard_controller - INFO - Connected to device: Manufacturer: BY Tech, Product: Gaming Keyboard, Serial: 
+2025-08-16 22:05:52 - config_manager - INFO - Using global config dir: /home/evan/.config/sinodragon
+2025-08-16 22:05:52 - shortcut_manager - INFO - Using global config directory: /home/evan/.config/sinodragon
+2025-08-16 22:05:52 - shortcut_manager - INFO - Loaded shortcuts from /home/evan/.config/sinodragon/shortcuts.json
+2025-08-16 22:05:52 - shortcut_manager - INFO - Loaded keyboard layout from /home/evan/.config/sinodragon/keyboard_layout.json
+2025-08-16 22:05:52 - features.app_shortcuts - INFO - Loaded shortcuts for 6 applications
+2025-08-16 22:05:52 - keyboard_controller - INFO - Attempting to connect to keyboard with VID:258a PID:0049
+2025-08-16 22:05:52 - keyboard_controller - INFO - Found 9 matching devices
+2025-08-16 22:05:52 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw1', Interface=0, Usage=6, Usage Page=1
+2025-08-16 22:05:52 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=128, Usage Page=1
+2025-08-16 22:05:52 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=12
+2025-08-16 22:05:52 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=65280
+2025-08-16 22:05:52 - keyboard_controller - INFO - Found target device with LED control interface
+2025-08-16 22:05:52 - keyboard_controller - INFO - Connected to device: Manufacturer: BY Tech, Product: Gaming Keyboard, Serial: 
+2025-08-16 22:30:45 - config_manager - INFO - Using global config dir: /home/evan/.config/sinodragon
+2025-08-16 22:30:45 - shortcut_manager - INFO - Using global config directory: /home/evan/.config/sinodragon
+2025-08-16 22:30:45 - shortcut_manager - INFO - Loaded shortcuts from /home/evan/.config/sinodragon/shortcuts.json
+2025-08-16 22:30:45 - shortcut_manager - INFO - Loaded keyboard layout from /home/evan/.config/sinodragon/keyboard_layout.json
+2025-08-16 22:30:45 - features.app_shortcuts - INFO - Loaded shortcuts for 6 applications
+2025-08-16 22:30:45 - keyboard_controller - INFO - Attempting to connect to keyboard with VID:258a PID:0049
+2025-08-16 22:30:45 - keyboard_controller - INFO - Found 9 matching devices
+2025-08-16 22:30:45 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw1', Interface=0, Usage=6, Usage Page=1
+2025-08-16 22:30:45 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=128, Usage Page=1
+2025-08-16 22:30:45 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=12
+2025-08-16 22:30:45 - keyboard_controller - INFO - Device: Path=b'/dev/hidraw2', Interface=1, Usage=1, Usage Page=65280
+2025-08-16 22:30:45 - keyboard_controller - INFO - Found target device with LED control interface
+2025-08-16 22:30:45 - keyboard_controller - INFO - Connected to device: Manufacturer: BY Tech, Product: Gaming Keyboard, Serial: 

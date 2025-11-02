@@ -28,10 +28,8 @@ from ui.key_mapping import QT_KEY_MAP
 from ui.event_handler import CustomKeyEvent
 from ui.dialogs.modifier_colors import ModifierColorsDialog
 
-# Import features
-from features.text_display import TextDisplayFeature
-from features.effects import EffectsFeature
-from features.system_monitor import SystemMonitorFeature
+# Import features required for this minimal app
+# No text display, effects, or system monitor in minimal build
 # No need to import AppShortcutFeature since it's now combined in ShortcutLightingFeature
 from features.app_shortcuts import AppShortcutConfigManager
 
@@ -106,10 +104,6 @@ class KeyboardConfigApp(QMainWindow):
         
         # Install event filter to catch key events
         QApplication.instance().installEventFilter(self)
-        
-        # Create feature modules
-        self.text_display = TextDisplayFeature(self)
-        self.effects = EffectsFeature(self)
         
         # Initialize global monitoring variables
         self.global_listener = None
@@ -306,46 +300,13 @@ class KeyboardConfigApp(QMainWindow):
     
     def toggle_shortcut_monitoring_from_tray(self):
         """Toggle shortcut monitoring from system tray"""
-        if self.is_monitoring_shortcuts:
-            # Stop monitoring
-            if hasattr(self, 'shortcut_lighting'):
-                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
-                    self.shortcut_lighting.stop_global_monitor()
-                    logger.info("Stopped global shortcut monitoring")
-                else:
-                    self.shortcut_lighting.stop_monitor()
-            
-            self.is_monitoring_shortcuts = False
-            self.tray_shortcut_action.setText("Start Shortcut Monitoring")
-            self.tray_icon.showMessage(
-                "Shortcut Monitoring",
-                "Shortcut monitoring stopped",
-                QSystemTrayIcon.Information,
-                2000
-            )
-            
-            # Update GUI elements if visible
-            self._update_control_panel_state()
-        else:
-            # Start monitoring
-            if hasattr(self, 'shortcut_lighting'):
-                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
-                    self.shortcut_lighting.start_global_monitor()
-                    logger.info("Started global shortcut monitoring")
-                else:
-                    self.shortcut_lighting.start_monitor()
-            
-            self.is_monitoring_shortcuts = True
-            self.tray_shortcut_action.setText("Stop Shortcut Monitoring")
-            self.tray_icon.showMessage(
-                "Shortcut Monitoring",
-                "Shortcut monitoring started",
-                QSystemTrayIcon.Information,
-                2000
-            )
-            
-            # Update GUI elements if visible
-            self._update_control_panel_state()
+        # Minimal build: only app-based monitoring supported
+        self.tray_icon.showMessage(
+            "Shortcut Monitoring",
+            "Global monitoring is not available in this build",
+            QSystemTrayIcon.Information,
+            2000
+        )
     
     def _update_control_panel_state(self):
         """Update control panel elements to reflect current state"""
@@ -360,61 +321,15 @@ class KeyboardConfigApp(QMainWindow):
     
     def start_global_shortcut_monitor(self):
         """Start global shortcut monitoring"""
-        if hasattr(self, 'shortcut_lighting'):
-            if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
-                self.shortcut_lighting.start_global_monitor()
-                logger.info("Started global shortcut monitoring")
-            else:
-                self.shortcut_lighting.start_monitor()
-            
-            self.is_monitoring_shortcuts = True
-            self._update_control_panel_state()
+        self.statusBar().showMessage("Global shortcut monitoring is not available in this build")
     
     def stop_global_shortcut_monitor(self):
         """Stop global shortcut monitoring"""
-        if hasattr(self, 'shortcut_lighting'):
-            if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
-                self.shortcut_lighting.stop_global_monitor()
-                logger.info("Stopped global shortcut monitoring")
-            else:
-                self.shortcut_lighting.stop_monitor()
-            
-            self.is_monitoring_shortcuts = False
-            self._update_control_panel_state()
+        self.statusBar().showMessage("Global shortcut monitoring is not available in this build")
     
     def toggle_daemon_mode(self):
         """Toggle daemon mode (shortcut monitoring only)"""
-        if self.daemon_mode:
-            # Exit daemon mode
-            self.daemon_mode = False
-            self.daemon_mode_action.setText("Enter Daemon Mode")
-            self.show_action.setEnabled(True)
-            
-            # Show notification
-            self.tray_icon.showMessage(
-                "Daemon Mode",
-                "Exited daemon mode",
-                QSystemTrayIcon.Information,
-                2000
-            )
-        else:
-            # Enter daemon mode
-            self.daemon_mode = True
-            self.daemon_mode_action.setText("Exit Daemon Mode")
-            self.hide()  # Hide the main window
-            self.show_action.setEnabled(False)  # Disable show window option
-            
-            # Start shortcut monitoring if not already active
-            if not self.is_monitoring_shortcuts:
-                self.toggle_shortcut_monitoring_from_tray()
-            
-            # Show notification
-            self.tray_icon.showMessage(
-                "Daemon Mode",
-                "Entered daemon mode (shortcut monitoring only)",
-                QSystemTrayIcon.Information,
-                2000
-            )
+        self.statusBar().showMessage("Daemon mode is not available in this build")
     
     def quit_application(self):
         """Quit the application entirely"""
@@ -641,10 +556,16 @@ class KeyboardConfigApp(QMainWindow):
                 return
             self.connect_button.setText("Disconnect")
         
-        # Get the current intensity
-        intensity_value = 100  # Default to 100%
-        if self.intensity_slider:
-            intensity_value = self.intensity_slider.value()
+        # Get the current intensity from keyboard layout slider if available
+        intensity_value = 100
+        keyboard_layout = None
+        for i in range(self.main_splitter.count()):
+            widget = self.main_splitter.widget(i)
+            if isinstance(widget, KeyboardLayout):
+                keyboard_layout = widget
+                break
+        if keyboard_layout and hasattr(keyboard_layout, 'intensity_slider'):
+            intensity_value = keyboard_layout.intensity_slider.value()
         intensity = intensity_value / 100.0
         
         # Use the memory-mapped format for faster transmission
@@ -694,56 +615,26 @@ class KeyboardConfigApp(QMainWindow):
     # UI interaction methods
     def handle_key_click(self, key):
         """Handle a key click event in the keyboard layout"""
-        # If in selection mode, add/remove from selection
-        if self.selection_mode:
-            if key in self.selected_keys:
-                # Deselect the key
-                self.selected_keys.remove(key)
-                key.setSelected(False)
-            else:
-                # Select the key
-                self.selected_keys.append(key)
-                key.setSelected(True)
-                
-            # Update status bar with selection info
-            if self.selected_keys:
-                self.statusBar().showMessage(f"Selected {len(self.selected_keys)} keys")
-            else:
-                self.statusBar().showMessage("No keys selected")
+        # Toggle the key between current color and off (black)
+        if key.color == QColor(0, 0, 0):
+            # Turn on - set to current color
+            key.setKeyColor(self.current_color)
+            self.statusBar().showMessage(f"Turned on {key.key_name}")
         else:
-            # Toggle the key between current color and off (black)
-            if key.color == QColor(0, 0, 0):
-                # Turn on - set to current color
-                key.setKeyColor(self.current_color)
-                self.statusBar().showMessage(f"Turned on {key.key_name}")
-            else:
-                # Turn off - set to black
-                key.setKeyColor(QColor(0, 0, 0))
-                self.statusBar().showMessage(f"Turned off {key.key_name}")
-            
-            # If auto-reload is enabled, apply the config
-            if self.auto_reload and self.keyboard.connected:
-                self.send_config()
+            # Turn off - set to black
+            key.setKeyColor(QColor(0, 0, 0))
+            self.statusBar().showMessage(f"Turned off {key.key_name}")
+        
+        # If auto-reload is enabled, apply the config
+        if self.auto_reload and self.keyboard.connected:
+            self.send_config()
     
     def toggle_selection_mode(self, enabled):
         """Toggle between selection mode and normal color application mode"""
-        self.selection_mode = enabled
-        
-        # Get control panel for UI updates
-        control_panel = self._get_control_panel()
-        
-        # Update UI state based on selection mode
-        if enabled:
-            self.statusBar().showMessage("Selection mode enabled - click keys to select/deselect")
-            # Highlight the selection checkbox to make it more obvious
-            if control_panel and hasattr(control_panel, 'selection_mode_toggle'):
-                control_panel.selection_mode_toggle.setStyleSheet("QCheckBox { color: blue; font-weight: bold; }")
-        else:
-            # Exit selection mode and clear all selections
-            self.clear_selection()
-            self.statusBar().showMessage("Selection mode disabled")
-            if control_panel and hasattr(control_panel, 'selection_mode_toggle'):
-                control_panel.selection_mode_toggle.setStyleSheet("")
+        # Selection mode removed in minimal build
+        self.selection_mode = False
+        self.clear_selection()
+        self.statusBar().showMessage("Selection mode is not available in minimal build")
     
     def clear_selection(self):
         """Clear all selected keys"""
@@ -753,37 +644,8 @@ class KeyboardConfigApp(QMainWindow):
         self.statusBar().showMessage("Selection cleared")
     
     def set_region_color(self):
-        """Apply the current color to the selected region with the region's intensity"""
-        if not self.selected_keys:
-            QMessageBox.information(self, "No Selection", "Please select keys first (enable Selection Mode and click on keys)")
-            return
-        
-        # Get region intensity slider from control panel
-        control_panel = self._get_control_panel()
-        region_intensity_slider = None
-        if control_panel and hasattr(control_panel, 'region_intensity_slider'):
-            region_intensity_slider = control_panel.region_intensity_slider
-        
-        # Get intensity from slider (0-100)
-        intensity = 1.0  # Default to full intensity
-        if region_intensity_slider:
-            intensity = region_intensity_slider.value() / 100.0
-        
-        # Apply the color with intensity to each selected key
-        for key in self.selected_keys:
-            # Create a color with the current color's RGB values adjusted by intensity
-            adjusted_color = QColor(
-                min(255, int(self.current_color.red() * intensity)),
-                min(255, int(self.current_color.green() * intensity)),
-                min(255, int(self.current_color.blue() * intensity))
-            )
-            key.setKeyColor(adjusted_color)
-        
-        # Update the keyboard if auto-reload is on
-        if self.auto_reload and self.keyboard.connected:
-            self.send_config()
-        
-        self.statusBar().showMessage(f"Applied color to {len(self.selected_keys)} keys at {int(intensity * 100)}% intensity")
+        """Selection region feature removed in minimal build"""
+        QMessageBox.information(self, "Not Available", "Region selection is not available in this build.")
     
     def set_current_color(self, color):
         """Set the current working color"""
@@ -800,10 +662,7 @@ class KeyboardConfigApp(QMainWindow):
                 self.color_display.setColor(color)
             self.statusBar().showMessage(f"Selected color: RGB({color.red()}, {color.green()}, {color.blue()})")
             
-            # Update any selected keys if in selection mode
-            if self.selection_mode and self.selected_keys:
-                self.set_region_color()
-    
+                
     def apply_current_color_to_all(self):
         """Apply the current color to all keys"""
         for key in self.keys:
@@ -813,38 +672,9 @@ class KeyboardConfigApp(QMainWindow):
             self.send_config()
     
     # Shortcut monitoring methods
+    # Global shortcut monitoring removed in minimal build
     def toggle_shortcut_monitor(self):
-        """Toggle global shortcut monitoring on/off"""
-        if self.shortcut_toggle.isChecked():
-            self.shortcut_toggle.setText("Stop Shortcut Monitor")
-            
-            # Use unified feature's global monitoring
-            if hasattr(self, 'shortcut_lighting'):
-                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
-                    # Use new unified feature
-                    self.shortcut_lighting.start_global_monitor()
-                else:
-                    # Legacy support for old ShortcutLighting class
-                    self.shortcut_lighting.start_monitor()
-            
-            # Update global state
-            self.is_monitoring_shortcuts = True
-            self.statusBar().showMessage("Global shortcut monitoring started")
-        else:
-            self.shortcut_toggle.setText("Start Shortcut Monitor")
-            
-            # Use unified feature's global monitoring
-            if hasattr(self, 'shortcut_lighting'):
-                if isinstance(self.shortcut_lighting, ShortcutLightingFeature):
-                    # Use new unified feature
-                    self.shortcut_lighting.stop_global_monitor()
-                else:
-                    # Legacy support for old ShortcutLighting class
-                    self.shortcut_lighting.stop_monitor()
-            
-            # Update global state
-            self.is_monitoring_shortcuts = False
-            self.statusBar().showMessage("Global shortcut monitoring stopped")
+        self.statusBar().showMessage("Global shortcut monitoring is not available in this build")
     
     def choose_highlight_color(self):
         """Choose a custom color for highlighting shortcuts"""
@@ -883,7 +713,8 @@ class KeyboardConfigApp(QMainWindow):
             self.shortcut_lighting.start_app_monitor()
             
             # Force immediate update of default keys
-            QTimer.singleShot(500, self.shortcut_lighting.highlight_default_keys)
+            # Ensure initial keys are applied for the app
+            QTimer.singleShot(500, lambda: self.shortcut_lighting.apply_app_shortcuts(self.shortcut_lighting.current_app))
             
             self.statusBar().showMessage("Application shortcut monitoring enabled")
         else:

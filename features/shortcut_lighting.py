@@ -1294,29 +1294,27 @@ class ShortcutLightingFeature(QObject):
         self.default_config_name = config_name
         
     def highlight_default_keys(self):
-        """Highlight default keys for current app if app monitoring is active"""
-        if not self.app_monitor_active or not self.current_app:
-            return False
-            
-        # Check if we have shortcuts for this app
-        if self.current_app not in self._app_cache:
-            # No app shortcuts defined
-            return False
-        
-        # Check if app has valid default keys
-        shortcuts = self._app_cache[self.current_app]['shortcuts']
-        has_default_keys = self._app_cache[self.current_app]['has_default_keys']
-        
-        if has_default_keys:
-            # Apply app-specific default keys
-            # Ensure default_keys is not None before highlighting
-            if shortcuts["default_keys"]:
-                self._highlight_app_shortcut_keys("default", shortcuts["default_keys"])
-                return True
-            else:
+        """Apply default keys for the current application, if defined."""
+        try:
+            app_name = self.current_app
+            if not app_name or app_name not in self._app_cache:
                 return False
-        else:
-            # No default keys defined for this app
+            shortcuts = self._app_cache[app_name]['shortcuts']
+            if 'default_keys' not in shortcuts or not shortcuts['default_keys']:
+                return False
+            # Clear current colors to baseline
+            for key in self.keys:
+                key.setKeyColor(QColor(0, 0, 0))
+            # Highlight default keys with the app color
+            color = self._app_cache[app_name]['color']
+            for key in self.keys:
+                if key.key_name in shortcuts['default_keys']:
+                    key.setKeyColor(color)
+            # Push to device if connected
+            if self.keyboard.connected and hasattr(self.app, 'send_config'):
+                self.app.send_config()
+            return True
+        except Exception:
             return False
 
     def _handle_key_press(self, key_name):
