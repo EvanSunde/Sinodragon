@@ -996,23 +996,12 @@ class AppShortcutManagerDialog(QDialog):
             self.load_app_shortcuts(self.app_selector.currentText())
     
     def create_shortcut_table(self, description):
-        """Create a table for key shortcuts"""
-        # Container widget
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        
-        # Description label
-        layout.addWidget(QLabel(description))
-        
-        # Create table
+        """Create and return a QTableWidget for key shortcuts."""
         table = QTableWidget()
         table.setColumnCount(1)
         table.setHorizontalHeaderLabels(["Key Name"])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        
-        layout.addWidget(table)
-        
         return table
     
     def update_color_display(self):

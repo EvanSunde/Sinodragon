@@ -549,13 +549,13 @@ class KeyboardConfigApp(QMainWindow):
             self.statusBar().showMessage("Failed to save configuration")
     
     def send_config(self):
-        """Send the current configuration to the keyboard"""
+        """Send the current on-screen key colors to the keyboard (live)."""
         if not self.keyboard.connected:
             if not self.keyboard.connect():
                 self.statusBar().showMessage("Failed to connect")
                 return
             self.connect_button.setText("Disconnect")
-        
+
         # Get the current intensity from keyboard layout slider if available
         intensity_value = 100
         keyboard_layout = None
@@ -567,14 +567,15 @@ class KeyboardConfigApp(QMainWindow):
         if keyboard_layout and hasattr(keyboard_layout, 'intensity_slider'):
             intensity_value = keyboard_layout.intensity_slider.value()
         intensity = intensity_value / 100.0
-        
-        # Use the memory-mapped format for faster transmission
-        config_name = self.config_combo.currentText()
-        memory_map = self.config_manager.get_config_in_memory_map(config_name)
-        
-        # Send directly using the memory map
-        success = self.keyboard.send_led_config(memory_map, intensity)
-        
+
+        # Build color list from current UI state to reflect unsaved edits live
+        color_list = []
+        for key in self.keys:
+            c = key.color
+            color_list.append((c.red(), c.green(), c.blue()))
+
+        success = self.keyboard.send_led_config(color_list, intensity)
+
         if success:
             self.statusBar().showMessage("Configuration applied successfully")
         else:
@@ -726,9 +727,18 @@ class KeyboardConfigApp(QMainWindow):
     def manage_app_shortcuts(self):
         """Open the application shortcut manager dialog"""
         from ui.dialogs.application_shortcuts import AppShortcutManagerDialog
-        # Use the app_shortcut_config directly since it's needed for the dialog
-        dialog = AppShortcutManagerDialog(self, self.app_shortcut_config)
-        dialog.exec_()
+        # Provide a feature object implementing the expected interface for the dialog
+        try:
+            # Lazily create and cache a feature adapter for the dialog
+            if not hasattr(self, '_app_shortcut_feature'):
+                from features.app_shortcuts import AppShortcutFeature
+                self._app_shortcut_feature = AppShortcutFeature(self.app_shortcut_config, self, self.shortcut_lighting)
+            dialog = AppShortcutManagerDialog(self, self._app_shortcut_feature)
+            dialog.exec_()
+        finally:
+            # Reload caches so changes are reflected immediately
+            if hasattr(self.shortcut_lighting, 'reload_app_shortcuts'):
+                self.shortcut_lighting.reload_app_shortcuts()
     
     # Utility methods
     def save_keyboard_layout(self):
@@ -939,6 +949,79 @@ class KeyboardConfigApp(QMainWindow):
             self.send_config()
         
         self.statusBar().showMessage("Typing preset applied")
+
+    def apply_coding_preset(self):
+        """Apply a preset optimized for coding sessions."""
+        # Base: dim background
+        dim = QColor(10, 15, 25)
+        for key in self.keys:
+            key.setKeyColor(dim)
+
+        # Emphasize home row
+        for name in ["A","S","D","F","J","K","L",";"]:
+            for key in self.keys:
+                if key.key_name == name:
+                    key.setKeyColor(QColor(0, 200, 120))
+
+        # Navigation and edits
+        for name in ["Bksp","Enter","Tab","Space","Home","End","PgUp","PgDn","↑","↓","←","→"]:
+            for key in self.keys:
+                if key.key_name == name:
+                    key.setKeyColor(QColor(80, 160, 255))
+
+        # Brackets and symbols
+        for name in ["[","]","(",")","{","}","-","=","\",","'","/",".",","]:
+            for key in self.keys:
+                if key.key_name == name:
+                    key.setKeyColor(QColor(255, 180, 70))
+
+        # Modifiers
+        for name in ["Ctrl","Shift","Alt","Win"]:
+            for key in self.keys:
+                if key.key_name == name:
+                    key.setKeyColor(QColor(255, 80, 120))
+
+        if self.auto_reload and self.keyboard.connected:
+            self.send_config()
+        self.statusBar().showMessage("Coding preset applied")
+
+    def apply_movie_preset(self):
+        """Apply a preset suited for media viewing (subtle, focused controls)."""
+        # Very dim base
+        base = QColor(0, 0, 10)
+        for key in self.keys:
+            key.setKeyColor(base)
+
+        # Playback/navigation emphasis
+        for name in ["Space","↑","↓","←","→","Home","End","PgUp","PgDn"]:
+            for key in self.keys:
+                if key.key_name == name:
+                    key.setKeyColor(QColor(30, 180, 255))
+
+        # Volume keys if mapped (use arrows as proxy as many TKLs)
+        for name in ["F2","F3","F7","F8","F9","F10"]:
+            for key in self.keys:
+                if key.key_name == name:
+                    key.setKeyColor(QColor(120, 240, 160))
+
+        if self.auto_reload and self.keyboard.connected:
+            self.send_config()
+        self.statusBar().showMessage("Movie preset applied")
+
+    def apply_moba_preset(self):
+        """MOBA layout: QWER row and number keys emphasized."""
+        # Clear
+        for key in self.keys:
+            key.setKeyColor(QColor(0, 0, 0))
+
+        for name in ["Q","W","E","R","D","F","1","2","3","4","5","6","B","G","Space"]:
+            for key in self.keys:
+                if key.key_name == name:
+                    key.setKeyColor(QColor(255, 140, 0))
+
+        if self.auto_reload and self.keyboard.connected:
+            self.send_config()
+        self.statusBar().showMessage("MOBA preset applied")
 
     def clear_keyboard(self):
         """Clear all keys to black (off state)"""

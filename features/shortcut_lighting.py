@@ -17,6 +17,12 @@ import socket
 import signal
 from pathlib import Path
 
+# Optional import to reuse Hyprland IPC implementation
+try:
+    from features.app_shortcuts import HyprlandIPC  # lightweight, socket-based
+except Exception:
+    HyprlandIPC = None
+
 logger = logging.getLogger(__name__)
 
 # Check if evdev is available
@@ -96,6 +102,9 @@ class ShortcutLightingFeature(QObject):
         
         # Monitor thread
         self.monitor_thread = None
+
+        # Hyprland IPC client (event-driven, low CPU)
+        self.hyprland_ipc = None
         
         # Initialize app cache
         self._initialize_app_cache()
@@ -749,13 +758,32 @@ class ShortcutLightingFeature(QObject):
             
         self.app_monitor_active = True
         self._currently_pressed_keys.clear()
-        
-        # Start monitor thread
-        self.monitor_thread = threading.Thread(
-            target=self._monitoring_loop,
-            daemon=True
-        )
-        self.monitor_thread.start()
+
+        # Prefer Hyprland IPC if available and running
+        if os.environ.get('HYPRLAND_INSTANCE_SIGNATURE') and HyprlandIPC is not None:
+            try:
+                def on_window_change(app_class):
+                    # Save previous state and apply new app shortcuts
+                    if self.current_app != "Unknown":
+                        self.save_stable_state()
+                    self.current_app = app_class or "Unknown"
+                    self.app_changed.emit(self.current_app)
+                    self.apply_app_shortcuts(self.current_app)
+
+                self.hyprland_ipc = HyprlandIPC(on_window_change)
+                started = self.hyprland_ipc.start()
+                if not started:
+                    self.hyprland_ipc = None
+            except Exception:
+                self.hyprland_ipc = None
+
+        # Fallback to polling thread if IPC is not available
+        if self.hyprland_ipc is None:
+            self.monitor_thread = threading.Thread(
+                target=self._monitoring_loop,
+                daemon=True
+            )
+            self.monitor_thread.start()
         
         # Enable app-specific shortcuts
         self.disable_global_shortcuts = True
@@ -763,7 +791,15 @@ class ShortcutLightingFeature(QObject):
     def stop_app_monitor(self):
         """Stop monitoring for application-specific shortcuts"""
         self.app_monitor_active = False
-        
+
+        # Stop Hyprland IPC if running
+        if self.hyprland_ipc is not None:
+            try:
+                self.hyprland_ipc.stop()
+            except Exception:
+                pass
+            self.hyprland_ipc = None
+
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=1.0)
             
@@ -818,6 +854,9 @@ class ShortcutLightingFeature(QObject):
         try:
             # Check if Hyprland is running (Wayland)
             if os.environ.get('HYPRLAND_INSTANCE_SIGNATURE'):
+                # If IPC is active, rely on callback path; fall back to hyprctl
+                if self.hyprland_ipc is not None:
+                    return self.current_app or "Unknown"
                 cmd = "hyprctl activewindow | grep class | awk '{print $2}'"
                 result = subprocess.check_output(cmd, shell=True, text=True).strip()
                 return result
@@ -838,6 +877,18 @@ class ShortcutLightingFeature(QObject):
                 
         except Exception:
             return "Unknown"
+
+    def reload_app_shortcuts(self):
+        """Reload app shortcut configurations and rebuild caches."""
+        try:
+            # Reload from disk
+            if hasattr(self.config_manager, 'load_app_shortcuts'):
+                self.config_manager.load_app_shortcuts()
+            # Rebuild cache
+            self._initialize_app_cache()
+            return True
+        except Exception:
+            return False
     
     def apply_app_shortcuts(self, app_name):
         """Apply application-specific shortcuts to the keyboard"""

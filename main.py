@@ -8,6 +8,7 @@ from utils import setup_logging
 
 # Import from new structure
 from ui.main_window import KeyboardConfigApp
+from ui.app_v2 import KeyboardAppV2
 from features.cli import CommandLineInterface
 
 def main():
@@ -32,8 +33,8 @@ def main():
         app = QApplication(sys.argv)
         app.setStyle('Fusion')
         
-        # Create the keyboard app
-        keyboard_app = KeyboardConfigApp()
+        # Create the keyboard app (V2)
+        keyboard_app = KeyboardAppV2()
         
         # Set auto-connect preference
         if args.no_connect:
