@@ -32,7 +32,7 @@ class EvdevInputMonitor:
         self.running = False
         self.devices = []
 
-    def poll(self, timeout: float = 0.05) -> None:
+    def poll(self, timeout: float = 0.0) -> None:
         if not self.running or not self.devices:
             return
         try:
@@ -60,7 +60,8 @@ class EvdevInputMonitor:
                             self.pressed.remove(name)
                             self.on_release(name)
         except Exception:
-            pass
+            # swallow errors to avoid blocking UI
+            return
 
 
 def _keycode_to_name(code: str) -> str:

@@ -1,7 +1,7 @@
 import time
 from typing import List, Tuple
 
-from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QColorDialog, QApplication
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QColorDialog, QApplication, QSplitter, QTabWidget, QCheckBox, QSlider
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
 
@@ -35,38 +35,78 @@ class KeyboardAppV2(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
 
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Config:"))
+        splitter = QSplitter(Qt.Horizontal)
+
+        # Left: Keyboard
+        kb = KeyboardLayout(self)
+        self.keys = kb.keys
+        splitter.addWidget(kb)
+
+        # Right: Tabbed control panel
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        tabs = QTabWidget()
+
+        # Tab 1: Config
+        tab_cfg = QWidget()
+        cfg_layout = QVBoxLayout(tab_cfg)
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Config:"))
         self.combo = QComboBox()
         self.combo.addItems(self.config.list_configs())
         self.combo.currentTextChanged.connect(self.load_config)
-        top.addWidget(self.combo)
+        row1.addWidget(self.combo)
+        cfg_layout.addLayout(row1)
 
+        row2 = QHBoxLayout()
         btn_save = QPushButton("Save")
         btn_save.clicked.connect(self.save_config)
-        top.addWidget(btn_save)
-
+        row2.addWidget(btn_save)
         btn_apply = QPushButton("Apply")
         btn_apply.clicked.connect(self.apply_ui_colors)
-        top.addWidget(btn_apply)
+        row2.addWidget(btn_apply)
+        cfg_layout.addLayout(row2)
 
-        btn_profiles = QPushButton("Manage Profiles")
-        btn_profiles.clicked.connect(self.open_profiles_dialog)
-        top.addWidget(btn_profiles)
+        # Color picker and intensity
+        row3 = QHBoxLayout()
+        self.color_btn = QPushButton("Pick Color")
+        self.color_btn.clicked.connect(self.pick_current_color)
+        row3.addWidget(self.color_btn)
+        row3.addWidget(QLabel("Intensity:"))
+        self.intensity_slider = QSlider(Qt.Horizontal)
+        self.intensity_slider.setRange(5, 100)
+        self.intensity_slider.setValue(100)
+        self.intensity_slider.valueChanged.connect(self.on_intensity_changed)
+        row3.addWidget(self.intensity_slider)
+        cfg_layout.addLayout(row3)
 
+        tabs.addTab(tab_cfg, "Config")
+
+        # Tab 2: Presets
+        tab_presets = QWidget()
+        p_layout = QVBoxLayout(tab_presets)
         btn_coding = QPushButton("Coding Preset")
         btn_coding.clicked.connect(self.apply_coding_preset)
-        top.addWidget(btn_coding)
-
+        p_layout.addWidget(btn_coding)
         btn_moba = QPushButton("MOBA Preset")
         btn_moba.clicked.connect(self.apply_moba_preset)
-        top.addWidget(btn_moba)
+        p_layout.addWidget(btn_moba)
+        tabs.addTab(tab_presets, "Presets")
 
-        layout.addLayout(top)
+        # Tab 3: Shortcuts
+        tab_short = QWidget()
+        s_layout = QVBoxLayout(tab_short)
+        self.short_enabled = QCheckBox("Enable App Profiles")
+        self.short_enabled.setChecked(True)
+        s_layout.addWidget(self.short_enabled)
+        s_layout.addWidget(QLabel("Root Key triggers default keys (Win by default)."))
+        tabs.addTab(tab_short, "Shortcuts")
 
-        kb = KeyboardLayout(self)
-        self.keys = kb.keys
-        layout.addWidget(kb)
+        right_layout.addWidget(tabs)
+        splitter.addWidget(right)
+        splitter.setSizes([900, 300])
+
+        layout.addWidget(splitter)
 
         self.setCentralWidget(central)
 
@@ -78,7 +118,7 @@ class KeyboardAppV2(QMainWindow):
 
         self.poll_timer = QTimer()
         self.poll_timer.timeout.connect(self._poll_backends)
-        self.poll_timer.start(100)
+        self.poll_timer.start(50)
 
         # load default config
         names = self.config.list_configs()
@@ -90,6 +130,7 @@ class KeyboardAppV2(QMainWindow):
         self.current_config_name = cfg.get("name")
         colors = cfg.get("colors", [])
         self.intensity = float(cfg.get("intensity", 1.0))
+        self.intensity_slider.setValue(int(self.intensity * 100))
         for i, key in enumerate(self.keys):
             if i < len(colors):
                 r, g, b = colors[i]
@@ -114,21 +155,22 @@ class KeyboardAppV2(QMainWindow):
 
     # monitors polling
     def _poll_backends(self) -> None:
-        self.hypr.poll(0.05)
-        self.ev.poll(0.02)
+        self.hypr.poll(0.0)
+        self.ev.poll(0.0)
 
     def _on_active_window(self, app_class: str) -> None:
         if not app_class:
             return
+        if not self.short_enabled.isChecked():
+            return
         self.current_app = app_class
         prof = self.profiles.load(app_class)
-        if not prof:
-            return
-        self._apply_profile_default(prof)
+        if prof:
+            self._apply_profile_default(prof)
 
     # evdev key tracking
     def _on_key_press(self, key_name: str) -> None:
-        if key_name == self.root_key:
+        if key_name == self.root_key and self.short_enabled.isChecked():
             prof = self.profiles.load(self.current_app)
             if prof:
                 self._apply_profile_default(prof)
@@ -174,6 +216,24 @@ class KeyboardAppV2(QMainWindow):
             key.setKeyColor(QColor(0, 0, 0))
         for name in ["Q","W","E","R","D","F","1","2","3","4","5","6","B","G","Space"]:
             self._highlight_key(name, QColor(255, 140, 0))
+        self.apply_ui_colors()
+
+    # key clicking + color management
+    def pick_current_color(self) -> None:
+        c = QColorDialog.getColor(getattr(self, '_current_qcolor', QColor(0, 255, 0)), self, "Select Color")
+        if c.isValid():
+            self._current_qcolor = c
+
+    def handle_key_click(self, key) -> None:
+        # KeyboardLayout expects this method on parent
+        c = getattr(self, '_current_qcolor', QColor(0, 255, 0))
+        if hasattr(key, 'setKeyColor'):
+            key.setKeyColor(c)
+            # live apply
+            self.apply_ui_colors()
+
+    def on_intensity_changed(self, value: int) -> None:
+        self.intensity = max(0.05, min(1.0, value / 100.0))
         self.apply_ui_colors()
 
     # profiles dialog (minimal stub)

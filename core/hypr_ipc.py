@@ -10,6 +10,7 @@ class HyprlandIPCClient:
         self.socket_path: Optional[str] = None
         self.sock: Optional[socket.socket] = None
         self.running = False
+        self._next_reconnect_ts = 0.0
 
         sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
         if sig:
@@ -31,16 +32,25 @@ class HyprlandIPCClient:
                 pass
             self.sock = None
 
-    def poll(self, timeout: float = 0.2) -> None:
+    def poll(self, timeout: float = 0.0) -> None:
         if not self.running or not self.socket_path:
             return
         try:
             if not self.sock:
+                # respect reconnect backoff without sleeping in UI thread
+                import time as _t
+                now = _t.time()
+                if now < self._next_reconnect_ts:
+                    return
                 self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self.sock.settimeout(1.0)
+                self.sock.settimeout(0.1)
                 self.sock.connect(self.socket_path)
+                self.sock.settimeout(0.0)  # non-blocking
             self.sock.settimeout(timeout)
-            data = self.sock.recv(4096)
+            try:
+                data = self.sock.recv(4096)
+            except BlockingIOError:
+                return
             if not data:
                 # reconnect next round
                 try:
@@ -48,7 +58,8 @@ class HyprlandIPCClient:
                 except Exception:
                     pass
                 self.sock = None
-                time.sleep(0.5)
+                import time as _t
+                self._next_reconnect_ts = _t.time() + 0.5
                 return
             for line in data.decode("utf-8", errors="ignore").splitlines():
                 if line.startswith("activewindow>>"):
@@ -66,6 +77,7 @@ class HyprlandIPCClient:
                     self.sock.close()
             finally:
                 self.sock = None
-                time.sleep(0.5)
+                import time as _t
+                self._next_reconnect_ts = _t.time() + 0.5
 
 
