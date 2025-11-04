@@ -264,9 +264,20 @@ class KeyboardAppV2(QMainWindow):
             return
         prof = self._get_cached_profile(app_class)
         if prof:
-            self._apply_profile_default(prof)
+            if getattr(prof, 'default_keys', None):
+                self._apply_profile_default(prof)
+            else:
+                gprof = self._get_global_profile()
+                if gprof and getattr(gprof, 'default_keys', None):
+                    self._apply_default_keys(gprof.default_keys, QColor(*gprof.color))
+                else:
+                    self._restore_baseline_to_ui()
         else:
-            self._restore_baseline_to_ui()
+            gprof = self._get_global_profile()
+            if gprof and getattr(gprof, 'default_keys', None):
+                self._apply_default_keys(gprof.default_keys, QColor(*gprof.color))
+            else:
+                self._restore_baseline_to_ui()
 
     # evdev key tracking
     def _on_key_press(self, key_name: str) -> None:
@@ -312,7 +323,17 @@ class KeyboardAppV2(QMainWindow):
             for k in self.keys:
                 k.setKeyColor(QColor(0, 0, 0))
             color = QColor(*prof.color)
-            for name in prof.default_keys:
+            for name in (prof.default_keys or []):
+                self._highlight_key(name, color)
+            self._view_state = 'app_default'
+            self._last_combo_key = None
+        self.apply_ui_colors()
+
+    def _apply_default_keys(self, keys: List[str], color: QColor) -> None:
+        if self._view_state != 'app_default':
+            for k in self.keys:
+                k.setKeyColor(QColor(0, 0, 0))
+            for name in (keys or []):
                 self._highlight_key(name, color)
             self._view_state = 'app_default'
             self._last_combo_key = None
@@ -328,7 +349,7 @@ class KeyboardAppV2(QMainWindow):
         keys_to_highlight = combos.get(key)
         if not keys_to_highlight:
             # Fallback to global profile combos
-            gprof = self._get_cached_profile("global")
+            gprof = self._get_global_profile()
             if gprof and (gprof.combos or {}):
                 keys_to_highlight = (gprof.combos or {}).get(key)
         if not keys_to_highlight:
@@ -368,6 +389,13 @@ class KeyboardAppV2(QMainWindow):
         self._view_state = 'baseline'
         self._last_combo_key = None
         self.apply_ui_colors()
+
+    def _get_global_profile(self) -> AppProfile:
+        if not hasattr(self, '_global_profile_cache'):
+            self._global_profile_cache = None
+        if self._global_profile_cache is None:
+            self._global_profile_cache = self.profiles.load('global')
+        return self._global_profile_cache
 
 
     def _highlight_key(self, name: str, color: QColor) -> None:

@@ -104,9 +104,12 @@ class HyprlandIPCClient:
                     payload = line.split(">>", 1)[1].strip()
                     if payload and payload != ",":
                         app_class = payload.split(",")[0]
-                        if app_class:
-                            _logger.info(f"Hyprland active window: {app_class}")
-                            self.on_active_window(app_class)
+                        _logger.info(f"Hyprland active window: {app_class}")
+                        self.on_active_window(app_class)
+                    else:
+                        # Blank/none active window: propagate empty to allow reset
+                        _logger.info("Hyprland active window: <none>")
+                        self.on_active_window("")
         except (socket.timeout, BlockingIOError):
             pass
         except Exception:
