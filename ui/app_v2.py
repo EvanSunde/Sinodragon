@@ -37,7 +37,6 @@ class KeyboardAppV2(QMainWindow):
         self._baseline_colors = []
         self._view_state = "baseline"  # baseline | app_default | combo
         self._last_combo_key = None
-        self._win_overlay_active = False
 
         # UI
         central = QWidget()
@@ -261,10 +260,6 @@ class KeyboardAppV2(QMainWindow):
         logger.info(f"Key press: {key_name}")
         # Track pressed keys
         self._pressed_keys.add(key_name)
-        # Global Win overlay across all apps
-        if key_name == 'Win':
-            self._win_overlay_active = True
-            self._apply_overlay_and_send()
         if not self.short_enabled.isChecked():
             return
         prof = self._get_cached_profile(self.current_app)
@@ -280,8 +275,6 @@ class KeyboardAppV2(QMainWindow):
     def _on_key_release(self, key_name: str) -> None:
         if key_name in self._pressed_keys:
             self._pressed_keys.remove(key_name)
-        if key_name == 'Win':
-            self._win_overlay_active = False
         if not self.short_enabled.isChecked():
             return
         prof = self._get_cached_profile(self.current_app)
@@ -297,7 +290,7 @@ class KeyboardAppV2(QMainWindow):
             if self._view_state != 'app_default':
                 self._apply_profile_default(prof)
             else:
-                self._apply_overlay_and_send()
+                self.apply_ui_colors()
 
     def _apply_profile_default(self, prof: AppProfile) -> None:
         logger.info(f"Applying profile defaults for {prof.name}")
@@ -310,7 +303,7 @@ class KeyboardAppV2(QMainWindow):
                 self._highlight_key(name, color)
             self._view_state = 'app_default'
             self._last_combo_key = None
-        self._apply_overlay_and_send()
+        self.apply_ui_colors()
 
     def _apply_combo_highlights_if_any(self, prof: AppProfile) -> None:
         mods = self._current_modifiers()
@@ -320,6 +313,11 @@ class KeyboardAppV2(QMainWindow):
         key = "+".join(sorted(mods))
         combos = prof.combos or {}
         keys_to_highlight = combos.get(key)
+        if not keys_to_highlight:
+            # Fallback to global profile combos
+            gprof = self._get_cached_profile("global")
+            if gprof and (gprof.combos or {}):
+                keys_to_highlight = (gprof.combos or {}).get(key)
         if not keys_to_highlight:
             return
         if self._view_state != 'combo' or self._last_combo_key != key:
@@ -332,7 +330,7 @@ class KeyboardAppV2(QMainWindow):
                 self._highlight_key(m, QColor(255, 200, 80))
             self._view_state = 'combo'
             self._last_combo_key = key
-        self._apply_overlay_and_send()
+        self.apply_ui_colors()
 
     def _current_modifiers(self) -> List[str]:
         mods = []
@@ -356,16 +354,8 @@ class KeyboardAppV2(QMainWindow):
                 key.setKeyColor(QColor(r, g, b))
         self._view_state = 'baseline'
         self._last_combo_key = None
-        self._apply_overlay_and_send()
-
-    def _apply_overlay_and_send(self) -> None:
-        # Overlay global Win highlight if active
-        if self._win_overlay_active:
-            try:
-                self._highlight_key('Win', QColor(200, 200, 255))
-            except Exception:
-                pass
         self.apply_ui_colors()
+
 
     def _highlight_key(self, name: str, color: QColor) -> None:
         if not name:
