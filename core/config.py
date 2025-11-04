@@ -47,4 +47,23 @@ class ConfigStore:
         colors = [(0, 40, 0) for _ in range(total_keys)]
         return {"name": name or "Default", "intensity": 1.0, "colors": colors}
 
+    def delete(self, name: str) -> bool:
+        if not name:
+            return False
+        path = os.path.join(self.configs_dir, f"{name}.json")
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+        return False
+
+    def rename(self, old: str, new: str) -> bool:
+        if not old or not new or old == new:
+            return False
+        op = os.path.join(self.configs_dir, f"{old}.json")
+        np = os.path.join(self.configs_dir, f"{new}.json")
+        if not os.path.exists(op):
+            return False
+        os.replace(op, np)
+        return True
+
 

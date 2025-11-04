@@ -56,6 +56,23 @@ class AppProfilesStore:
             json.dump(profile.to_dict(), f, indent=2)
         return True
 
+    def delete(self, app: str) -> bool:
+        path = self.path_for(app)
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+        return False
+
+    def rename(self, old: str, new: str) -> bool:
+        if not old or not new or old == new:
+            return False
+        op = self.path_for(old)
+        np = self.path_for(new)
+        if not os.path.exists(op):
+            return False
+        os.replace(op, np)
+        return True
+
     def load_all(self) -> Dict[str, AppProfile]:
         out: Dict[str, AppProfile] = {}
         for app in self.list_apps():

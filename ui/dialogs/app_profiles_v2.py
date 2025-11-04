@@ -48,6 +48,9 @@ class AppProfilesDialog(QDialog):
         new_btn = QPushButton("New")
         new_btn.clicked.connect(self._new)
         btns.addWidget(new_btn)
+        del_btn = QPushButton("Delete")
+        del_btn.clicked.connect(self._delete)
+        btns.addWidget(del_btn)
         layout.addLayout(btns)
 
         self._color = (255, 165, 0)
@@ -94,5 +97,17 @@ class AppProfilesDialog(QDialog):
         self.defaults_edit.clear()
         self.combos_edit.clear()
         self._color = (255, 165, 0)
+
+    def _delete(self) -> None:
+        name = self.name_edit.text().strip()
+        if not name:
+            return
+        if self.store.delete(name):
+            # remove from list
+            items = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+            self.list_widget.clear()
+            for app in self.store.list_apps():
+                self.list_widget.addItem(app)
+            self._new()
 
 
