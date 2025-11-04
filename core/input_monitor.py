@@ -71,7 +71,7 @@ def _keycode_to_name(code: str) -> str:
         'KEY_LEFTSHIFT': 'Shift', 'KEY_RIGHTSHIFT': 'Shift',
         'KEY_LEFTMETA': 'Win', 'KEY_RIGHTMETA': 'Win',
         'KEY_SPACE': 'Space', 'KEY_TAB': 'Tab', 'KEY_ENTER': 'Enter',
-        'KEY_BACKSPACE': 'Bksp', 'KEY_ESC': 'Esc',
+        'KEY_BACKSPACE': 'Bksp', 'KEY_ESC': 'Esc', 'KEY_DELETE': 'Delete',
     }
     if code in table:
         return table[code]

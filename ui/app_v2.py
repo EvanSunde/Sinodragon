@@ -33,6 +33,8 @@ class KeyboardAppV2(QMainWindow):
         self.intensity = 1.0
         self.current_app = "Unknown"
         self.root_key = "Win"  # can be made configurable
+        self._pressed_keys = set()
+        self._baseline_colors = []
 
         # UI
         central = QWidget()
@@ -177,6 +179,7 @@ class KeyboardAppV2(QMainWindow):
                 r, g, b = colors[i]
                 key.setKeyColor(QColor(int(r), int(g), int(b)))
         self.apply_ui_colors()
+        self._save_baseline_from_ui()
 
     def save_config(self) -> None:
         colors = self._current_ui_colors()
@@ -240,22 +243,49 @@ class KeyboardAppV2(QMainWindow):
         self.current_app = app_class
         if hasattr(self, 'current_app_label'):
             self.current_app_label.setText(f"Current App: {self.current_app}")
+        # Clear combo state on app switch
+        self._pressed_keys.clear()
         if not self.short_enabled.isChecked():
             return
         prof = self._get_cached_profile(app_class)
         if prof:
             self._apply_profile_default(prof)
+        else:
+            self._restore_baseline_to_ui()
 
     # evdev key tracking
     def _on_key_press(self, key_name: str) -> None:
         logger.info(f"Key press: {key_name}")
-        if key_name == self.root_key and self.short_enabled.isChecked():
-            prof = self._get_cached_profile(self.current_app)
-            if prof:
-                self._apply_profile_default(prof)
+        # Track pressed keys
+        self._pressed_keys.add(key_name)
+        if not self.short_enabled.isChecked():
+            return
+        prof = self._get_cached_profile(self.current_app)
+        if not prof:
+            return
+        # Root trigger: Win + Delete
+        if 'Win' in self._pressed_keys and 'Delete' in self._pressed_keys:
+            self._apply_profile_default(prof)
+            return
+        # Combo highlighting
+        self._apply_combo_highlights_if_any(prof)
 
     def _on_key_release(self, key_name: str) -> None:
-        pass
+        if key_name in self._pressed_keys:
+            self._pressed_keys.remove(key_name)
+        if not self.short_enabled.isChecked():
+            return
+        prof = self._get_cached_profile(self.current_app)
+        if not prof:
+            return
+        # If any combo still active, re-apply; else restore app defaults
+        if 'Win' in self._pressed_keys and 'Delete' in self._pressed_keys:
+            self._apply_profile_default(prof)
+            return
+        if self._has_active_modifiers():
+            self._apply_combo_highlights_if_any(prof)
+        else:
+            self._apply_profile_default(prof)
 
     def _apply_profile_default(self, prof: AppProfile) -> None:
         logger.info(f"Applying profile defaults for {prof.name}")
@@ -265,6 +295,49 @@ class KeyboardAppV2(QMainWindow):
         color = QColor(*prof.color)
         for name in prof.default_keys:
             self._highlight_key(name, color)
+        self.apply_ui_colors()
+
+    def _apply_combo_highlights_if_any(self, prof: AppProfile) -> None:
+        mods = self._current_modifiers()
+        if not mods:
+            return
+        # Build key like Ctrl+Shift etc (sorted for stable lookup)
+        key = "+".join(sorted(mods))
+        combos = prof.combos or {}
+        keys_to_highlight = combos.get(key)
+        if not keys_to_highlight:
+            return
+        # Clear then highlight combo keys with app color
+        for k in self.keys:
+            k.setKeyColor(QColor(0, 0, 0))
+        color = QColor(*prof.color)
+        for name in keys_to_highlight:
+            self._highlight_key(name, color)
+        # Optionally show pressed modifiers in their own colors
+        for m in mods:
+            self._highlight_key(m, QColor(255, 200, 80))
+        self.apply_ui_colors()
+
+    def _current_modifiers(self) -> List[str]:
+        mods = []
+        for m in ['Ctrl', 'Shift', 'Alt', 'Win']:
+            if m in self._pressed_keys:
+                mods.append(m)
+        return mods
+
+    def _has_active_modifiers(self) -> bool:
+        return any(m in self._pressed_keys for m in ['Ctrl', 'Shift', 'Alt', 'Win'])
+
+    def _save_baseline_from_ui(self) -> None:
+        self._baseline_colors = self._current_ui_colors()
+
+    def _restore_baseline_to_ui(self) -> None:
+        if not self._baseline_colors:
+            return
+        for i, key in enumerate(self.keys):
+            if i < len(self._baseline_colors):
+                r, g, b = self._baseline_colors[i]
+                key.setKeyColor(QColor(r, g, b))
         self.apply_ui_colors()
 
     def _highlight_key(self, name: str, color: QColor) -> None:
