@@ -3,6 +3,8 @@ Sinodragon – Hyprland-aware keyboard lighting
 Overview
 Sinodragon is a PyQt-based app that controls per-key RGB lighting on supported keyboards. It reacts to the currently focused application on Hyprland (Wayland) via the events socket and can highlight app-specific shortcuts on key press. It also supports a global fallback profile, live UI editing, presets, and a background daemon mode from the system tray.
 
+NOTE: This only work for Redragon keybaord with sinowealth chip. (pid : 0x0049 , vendor: 0x258A). This will not work for older Redragon keyboards (use openrgb). If you have other keyboard, you need to modify the keyboard_controller.py to support your keyboard. 
+
 Key features
 - Live LED updates while editing colors in the UI
 - Hyprland IPC driven app detection (no polling, no hyprctl)
