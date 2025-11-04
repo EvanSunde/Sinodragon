@@ -1,8 +1,9 @@
 import time
 import logging
+import os
 from typing import List, Tuple
 
-from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QColorDialog, QApplication, QSplitter, QTabWidget, QCheckBox, QSlider, QLineEdit
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QColorDialog, QApplication, QSplitter, QTabWidget, QCheckBox, QSlider, QLineEdit, QSystemTrayIcon, QMenu, QAction
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
 
@@ -15,6 +16,8 @@ from core.app_profiles import AppProfilesStore, AppProfile
 from ui.keyboard_layout import KeyboardLayout
 
 logger = logging.getLogger(__name__)
+_debug = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes', 'on')
+logger.setLevel(logging.INFO if _debug else logging.WARNING)
 
 
 class KeyboardAppV2(QMainWindow):
@@ -157,6 +160,10 @@ class KeyboardAppV2(QMainWindow):
         self.ev = EvdevInputMonitor(self._on_key_press, self._on_key_release)
         self.ev.start()
 
+        # System tray for daemon mode
+        self._daemon_mode = False
+        self._setup_tray()
+
         # Current app will update on first IPC event (no hyprctl)
 
         self.poll_timer = QTimer()
@@ -240,6 +247,12 @@ class KeyboardAppV2(QMainWindow):
 
     def _on_active_window(self, app_class: str) -> None:
         if not app_class:
+            # Blank active window -> load baseline
+            self.current_app = "Unknown"
+            if hasattr(self, 'current_app_label'):
+                self.current_app_label.setText("Current App: Unknown")
+            self._pressed_keys.clear()
+            self._restore_baseline_to_ui()
             return
         logger.info(f"Active app changed: {app_class}")
         self.current_app = app_class
@@ -503,6 +516,56 @@ class KeyboardAppV2(QMainWindow):
         except Exception:
             pass
         dlg.exec_()
+
+    # Tray / Daemon Mode
+    def _setup_tray(self) -> None:
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(self.windowIcon())
+        menu = QMenu()
+        act_show = QAction("Show Window", self)
+        act_show.triggered.connect(self.showNormal)
+        menu.addAction(act_show)
+
+        act_toggle_profiles = QAction("Toggle App Profiles", self)
+        def _toggle_profiles():
+            if hasattr(self, 'short_enabled'):
+                self.short_enabled.setChecked(not self.short_enabled.isChecked())
+        act_toggle_profiles.triggered.connect(_toggle_profiles)
+        menu.addAction(act_toggle_profiles)
+
+        self._daemon_action = QAction("Enter Daemon Mode", self)
+        self._daemon_action.triggered.connect(self.toggle_daemon_mode)
+        menu.addAction(self._daemon_action)
+
+        menu.addSeparator()
+        act_quit = QAction("Quit", self)
+        act_quit.triggered.connect(self._quit)
+        menu.addAction(act_quit)
+
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
+
+    def toggle_daemon_mode(self) -> None:
+        self._daemon_mode = not self._daemon_mode
+        if self._daemon_mode:
+            self.hide()
+            self._daemon_action.setText("Exit Daemon Mode")
+            if self.tray_icon:
+                self.tray_icon.showMessage("Sinodragon", "Running in background.")
+        else:
+            self.showNormal()
+            self._daemon_action.setText("Enter Daemon Mode")
+
+    def _on_tray_activated(self, reason) -> None:
+        if reason == QSystemTrayIcon.DoubleClick:
+            if self.isVisible():
+                self.hide()
+            else:
+                self.showNormal()
+
+    def _quit(self) -> None:
+        QApplication.instance().quit()
 
 def _hsv_to_rgb(h: float, s: float, v: float) -> Tuple[int, int, int]:
     import colorsys

@@ -6,6 +6,11 @@ import logging
 from typing import Callable, Optional
 
 
+_logger = logging.getLogger(__name__)
+_debug = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes', 'on')
+_logger.setLevel(logging.INFO if _debug else logging.WARNING)
+
+
 class HyprlandIPCClient:
     def __init__(self, on_active_window: Callable[[str], None]):
         self.on_active_window = on_active_window
@@ -25,14 +30,14 @@ class HyprlandIPCClient:
             # Try to discover a socket path without using hyprctl
             self.socket_path = self._discover_socket_path()
             if not self.socket_path:
-                logging.getLogger(__name__).warning("Hyprland instance signature not found and no socket discovered; IPC disabled")
+                _logger.warning("Hyprland instance signature not found and no socket discovered; IPC disabled")
 
     def start(self) -> bool:
         if not self.socket_path:
-            logging.getLogger(__name__).error("Hyprland socket path unavailable; cannot start IPC")
+            _logger.error("Hyprland socket path unavailable; cannot start IPC")
             return False
         self.running = True
-        logging.getLogger(__name__).info(f"Starting Hyprland IPC on {self.socket_path}")
+        _logger.info(f"Starting Hyprland IPC on {self.socket_path}")
         # non-threaded: expose a poll() to integrate with QTimer if needed
         return True
 
@@ -61,9 +66,9 @@ class HyprlandIPCClient:
                     if not self.socket_path or not os.path.exists(self.socket_path):
                         # Schedule next attempt and return quietly
                         self._next_reconnect_ts = now + 1.0
-                        logging.getLogger(__name__).debug("Hyprland IPC: socket not found; will retry discovery")
+                        _logger.debug("Hyprland IPC: socket not found; will retry discovery")
                         return
-                logging.getLogger(__name__).debug("Hyprland IPC: attempting socket connect")
+                _logger.debug("Hyprland IPC: attempting socket connect")
                 self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 self.sock.settimeout(0.1)
                 try:
@@ -73,10 +78,10 @@ class HyprlandIPCClient:
                     self.sock.close()
                     self.sock = None
                     self._next_reconnect_ts = now + 1.0
-                    logging.getLogger(__name__).warning("Hyprland IPC: socket path missing; retrying later")
+                    _logger.warning("Hyprland IPC: socket path missing; retrying later")
                     return
                 self.sock.settimeout(0.0)  # non-blocking
-                logging.getLogger(__name__).info("Hyprland IPC: connected")
+                _logger.info("Hyprland IPC: connected")
             self.sock.settimeout(timeout)
             try:
                 data = self.sock.recv(4096)
@@ -91,16 +96,16 @@ class HyprlandIPCClient:
                 self.sock = None
                 import time as _t
                 self._next_reconnect_ts = _t.time() + 0.5
-                logging.getLogger(__name__).warning("Hyprland IPC: socket closed; scheduling reconnect")
+                _logger.warning("Hyprland IPC: socket closed; scheduling reconnect")
                 return
             for line in data.decode("utf-8", errors="ignore").splitlines():
-                logging.getLogger(__name__).debug(f"Hyprland IPC line: {line}")
+                _logger.debug(f"Hyprland IPC line: {line}")
                 if line.startswith("activewindow>>"):
                     payload = line.split(">>", 1)[1].strip()
                     if payload and payload != ",":
                         app_class = payload.split(",")[0]
                         if app_class:
-                            logging.getLogger(__name__).info(f"Hyprland active window: {app_class}")
+                            _logger.info(f"Hyprland active window: {app_class}")
                             self.on_active_window(app_class)
         except (socket.timeout, BlockingIOError):
             pass
@@ -113,7 +118,7 @@ class HyprlandIPCClient:
                 self.sock = None
                 import time as _t
                 self._next_reconnect_ts = _t.time() + 0.5
-                logging.getLogger(__name__).warning("Hyprland IPC: exception; scheduling reconnect")
+                _logger.warning("Hyprland IPC: exception; scheduling reconnect")
 
     def _discover_socket_path(self) -> Optional[str]:
         """Attempt to locate a Hyprland events socket without using hyprctl."""
