@@ -15,6 +15,10 @@ Key features
 - System tray + daemon mode (run in background)
 - Optional evdev-based key monitoring for low-latency modifier detection
 
+![picture](asset/sinodragon2.png)
+![sinodragon](asset/sinodragon1.png)
+![picture](asset/sinodragon3.png)
+
 Requirements
 - Python 3.8+
 - Linux + Hyprland (Wayland)
