@@ -4,6 +4,7 @@ import os
 from typing import List, Tuple
 
 from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QColorDialog, QApplication, QSplitter, QTabWidget, QCheckBox, QSlider, QLineEdit, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtGui import QPalette
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
 
@@ -163,6 +164,7 @@ class KeyboardAppV2(QMainWindow):
         # System tray for daemon mode
         self._daemon_mode = False
         self._setup_tray()
+        self._apply_dark_mode(True)
 
         # Current app will update on first IPC event (no hyprctl)
 
@@ -490,6 +492,44 @@ class KeyboardAppV2(QMainWindow):
         if self._stars_ticks >= 40:  # ~6s
             self._anim_timer.stop()
 
+    # Additional presets
+    def apply_ocean_preset(self) -> None:
+        logger.info("Preset: ocean")
+        n = len(self.keys)
+        for i, key in enumerate(self.keys):
+            h = 0.55 + 0.1 * (i / max(1, n))
+            r, g, b = _hsv_to_rgb(h % 1.0, 0.7, 1.0)
+            key.setKeyColor(QColor(r, g, b))
+        self.apply_ui_colors()
+
+    def apply_sunset_preset(self) -> None:
+        logger.info("Preset: sunset")
+        n = len(self.keys)
+        for i, key in enumerate(self.keys):
+            h = 0.03 + 0.1 * (i / max(1, n))
+            r, g, b = _hsv_to_rgb(h % 1.0, 0.9, 1.0)
+            key.setKeyColor(QColor(r, g, b))
+        self.apply_ui_colors()
+
+    def apply_matrix_preset(self) -> None:
+        logger.info("Preset: matrix")
+        for key in self.keys:
+            key.setKeyColor(QColor(0, 20, 0))
+        cols = [k for k in self.keys if hasattr(k, 'key_name')]
+        for i, key in enumerate(cols):
+            if i % 3 == 0:
+                key.setKeyColor(QColor(0, 255, 70))
+        self.apply_ui_colors()
+
+    def apply_fire_preset(self) -> None:
+        logger.info("Preset: fire")
+        n = len(self.keys)
+        for i, key in enumerate(self.keys):
+            h = 0.02 + 0.05 * (i % 10) / 10.0
+            r, g, b = _hsv_to_rgb(h, 1.0, 1.0)
+            key.setKeyColor(QColor(r, g, b))
+        self.apply_ui_colors()
+
     # profile cache (LRU size 5)
     def _get_cached_profile(self, app: str) -> AppProfile:
         try:
@@ -561,11 +601,49 @@ class KeyboardAppV2(QMainWindow):
         act_toggle_profiles.triggered.connect(_toggle_profiles)
         menu.addAction(act_toggle_profiles)
 
+        # Dark mode toggle
+        self._dark_mode = True
+        self._dark_action = QAction("Enable Dark Mode", self)
+        def _toggle_dark():
+            self._dark_mode = not self._dark_mode
+            self._apply_dark_mode(self._dark_mode)
+            self._dark_action.setText("Disable Dark Mode" if self._dark_mode else "Enable Dark Mode")
+        self._dark_action.triggered.connect(_toggle_dark)
+        menu.addAction(self._dark_action)
+
+        # Config submenu
+        self._configs_menu = QMenu("Configs", self)
+        menu.addMenu(self._configs_menu)
+        self._populate_configs_menu()
+
+        # Presets submenu
+        presets_menu = QMenu("Presets", self)
+        for title, handler in [
+            ("Coding", self.apply_coding_preset),
+            ("Gaming", self.apply_gaming_preset),
+            ("Movie", self.apply_movie_preset),
+            ("Rainbow", self.apply_rainbow_preset),
+            ("Stars", self.apply_stars_preset),
+            ("Ocean", self.apply_ocean_preset),
+            ("Sunset", self.apply_sunset_preset),
+            ("Matrix", self.apply_matrix_preset),
+            ("Fire", self.apply_fire_preset),
+        ]:
+            act = QAction(title, self)
+            act.triggered.connect(handler)
+            presets_menu.addAction(act)
+        menu.addMenu(presets_menu)
+
         self._daemon_action = QAction("Enter Daemon Mode", self)
         self._daemon_action.triggered.connect(self.toggle_daemon_mode)
         menu.addAction(self._daemon_action)
 
         menu.addSeparator()
+        # Manage profiles from tray
+        act_profiles = QAction("Manage Profiles...", self)
+        act_profiles.triggered.connect(self.open_profiles_dialog)
+        menu.addAction(act_profiles)
+
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self._quit)
         menu.addAction(act_quit)
@@ -573,6 +651,17 @@ class KeyboardAppV2(QMainWindow):
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.activated.connect(self._on_tray_activated)
         self.tray_icon.show()
+
+    def _populate_configs_menu(self) -> None:
+        if not hasattr(self, '_configs_menu') or self._configs_menu is None:
+            return
+        self._configs_menu.clear()
+        for name in self.config.list_configs():
+            act = QAction(name, self)
+            def _make_loader(n):
+                return lambda: self.load_config(n)
+            act.triggered.connect(_make_loader(name))
+            self._configs_menu.addAction(act)
 
     def toggle_daemon_mode(self) -> None:
         self._daemon_mode = not self._daemon_mode
@@ -594,6 +683,28 @@ class KeyboardAppV2(QMainWindow):
 
     def _quit(self) -> None:
         QApplication.instance().quit()
+
+    def _apply_dark_mode(self, enabled: bool) -> None:
+        app = QApplication.instance()
+        if not app:
+            return
+        if not enabled:
+            app.setPalette(QPalette())
+            return
+        p = QPalette()
+        p.setColor(QPalette.Window, QColor(53, 53, 53))
+        p.setColor(QPalette.WindowText, QColor(220, 220, 220))
+        p.setColor(QPalette.Base, QColor(35, 35, 35))
+        p.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+        p.setColor(QPalette.ToolTipBase, QColor(220, 220, 220))
+        p.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
+        p.setColor(QPalette.Text, QColor(220, 220, 220))
+        p.setColor(QPalette.Button, QColor(53, 53, 53))
+        p.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+        p.setColor(QPalette.BrightText, QColor(255, 0, 0))
+        p.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        p.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        app.setPalette(p)
 
 def _hsv_to_rgb(h: float, s: float, v: float) -> Tuple[int, int, int]:
     import colorsys
