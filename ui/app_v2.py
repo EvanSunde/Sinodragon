@@ -266,7 +266,17 @@ class KeyboardAppV2(QMainWindow):
             return
         prof = self._get_cached_profile(app_class)
         if prof:
-            if getattr(prof, 'default_keys', None):
+            mode = getattr(prof, 'default_mode', 'keys')
+            if mode == 'none':
+                # Do not change defaults; use baseline
+                self._restore_baseline_to_ui()
+            elif mode == 'config':
+                cfg = getattr(prof, 'default_config_name', '') or ''
+                if cfg:
+                    self._apply_config_as_default(cfg)
+                else:
+                    self._restore_baseline_to_ui()
+            elif getattr(prof, 'default_keys', None):
                 self._apply_profile_default(prof)
             else:
                 gprof = self._get_global_profile()
@@ -306,17 +316,27 @@ class KeyboardAppV2(QMainWindow):
         prof = self._get_cached_profile(self.current_app)
         if not prof:
             return
-        # If any combo still active, re-apply; else restore app defaults
+        # If any combo still active, re-apply; else restore according to default_mode
         if 'Win' in self._pressed_keys and 'Delete' in self._pressed_keys:
             self._apply_profile_default(prof)
             return
         if self._has_active_modifiers():
             self._apply_combo_highlights_if_any(prof)
         else:
-            if self._view_state != 'app_default':
-                self._apply_profile_default(prof)
+            mode = getattr(prof, 'default_mode', 'keys')
+            if mode == 'none':
+                self._restore_baseline_to_ui()
+            elif mode == 'config':
+                cfg = getattr(prof, 'default_config_name', '') or ''
+                if cfg:
+                    self._apply_config_as_default(cfg)
+                else:
+                    self._restore_baseline_to_ui()
             else:
-                self.apply_ui_colors()
+                if self._view_state != 'app_default':
+                    self._apply_profile_default(prof)
+                else:
+                    self.apply_ui_colors()
 
     def _apply_profile_default(self, prof: AppProfile) -> None:
         logger.info(f"Applying profile defaults for {prof.name}")
@@ -339,6 +359,22 @@ class KeyboardAppV2(QMainWindow):
                 self._highlight_key(name, color)
             self._view_state = 'app_default'
             self._last_combo_key = None
+        self.apply_ui_colors()
+
+    def _apply_config_as_default(self, config_name: str) -> None:
+        cfg = self.config.load(config_name)
+        if not cfg:
+            self._restore_baseline_to_ui()
+            return
+        colors = cfg.get('colors', [])
+        for i, key in enumerate(self.keys):
+            if i < len(colors):
+                r, g, b = colors[i]
+                key.setKeyColor(QColor(int(r), int(g), int(b)))
+            else:
+                key.setKeyColor(QColor(0, 0, 0))
+        self._view_state = 'app_default'
+        self._last_combo_key = None
         self.apply_ui_colors()
 
     def _apply_combo_highlights_if_any(self, prof: AppProfile) -> None:

@@ -5,17 +5,23 @@ from PyQt5.QtGui import QColor
 
 
 class AppProfile:
-    def __init__(self, name: str, color: Tuple[int, int, int], default_keys: List[str], combos: Dict[str, List[str]]):
+    def __init__(self, name: str, color: Tuple[int, int, int], default_keys: List[str], combos: Dict[str, List[str]], default_mode: str = "keys", default_config_name: str = ""):
         self.name = name
         self.color = color
         self.default_keys = default_keys
         self.combos = combos  # e.g., {"Ctrl": ["S","F"], "Ctrl+Shift": ["N"]}
+        # default_mode: "keys" (use default_keys), "none" (do not change), "config" (use baseline/config)
+        self.default_mode = default_mode
+        # when default_mode == "config", the config name to use
+        self.default_config_name = default_config_name
 
     def to_dict(self) -> dict:
         return {
             "color": list(self.color),
             "default_keys": self.default_keys,
             "combos": self.combos,
+            "default_mode": self.default_mode,
+            "default_config_name": self.default_config_name,
         }
 
     @staticmethod
@@ -23,7 +29,9 @@ class AppProfile:
         color = tuple(data.get("color", (255, 165, 0)))
         default_keys = data.get("default_keys", [])
         combos = data.get("combos", {})
-        return AppProfile(name, (int(color[0]), int(color[1]), int(color[2])), default_keys, combos)
+        default_mode = data.get("default_mode", "keys")
+        default_config_name = data.get("default_config_name", "")
+        return AppProfile(name, (int(color[0]), int(color[1]), int(color[2])), default_keys, combos, default_mode, default_config_name)
 
 
 class AppProfilesStore:
