@@ -66,4 +66,44 @@ class ConfigStore:
         os.replace(op, np)
         return True
 
+    # Import/Export helpers
+    def import_file(self, src_path: str, name: Optional[str] = None) -> Optional[str]:
+        """Import a config JSON file from an arbitrary path into the configs dir.
+        Returns the resulting config name on success.
+        """
+        try:
+            if not os.path.exists(src_path):
+                return None
+            with open(src_path, 'r') as f:
+                data = json.load(f)
+            # Basic validation
+            colors = data.get('colors')
+            if not isinstance(colors, list):
+                return None
+            cfg_name = name or os.path.splitext(os.path.basename(src_path))[0]
+            # Write normalized file
+            out = {
+                'name': cfg_name,
+                'intensity': float(data.get('intensity', 1.0)),
+                'colors': colors,
+            }
+            dst = os.path.join(self.configs_dir, f"{cfg_name}.json")
+            with open(dst, 'w') as f:
+                json.dump(out, f, indent=2)
+            return cfg_name
+        except Exception:
+            return None
+
+    def export_file(self, name: str, dest_path: str) -> bool:
+        """Export a named config to a chosen destination path."""
+        try:
+            cfg = self.load(name)
+            if not cfg:
+                return False
+            with open(dest_path, 'w') as f:
+                json.dump(cfg, f, indent=2)
+            return True
+        except Exception:
+            return False
+
 

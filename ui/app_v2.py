@@ -3,7 +3,7 @@ import logging
 import os
 from typing import List, Tuple
 
-from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QColorDialog, QApplication, QSplitter, QTabWidget, QCheckBox, QSlider, QLineEdit, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QColorDialog, QApplication, QSplitter, QTabWidget, QCheckBox, QSlider, QLineEdit, QSystemTrayIcon, QMenu, QAction, QFileDialog, QMessageBox
 from PyQt5.QtGui import QPalette
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
@@ -15,6 +15,7 @@ from core.input_monitor import EvdevInputMonitor
 from core.app_profiles import AppProfilesStore, AppProfile
 
 from ui.keyboard_layout import KeyboardLayout
+from features import presets as preset_mod
 
 logger = logging.getLogger(__name__)
 _debug = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes', 'on')
@@ -85,6 +86,12 @@ class KeyboardAppV2(QMainWindow):
         btn_delete = QPushButton("Delete")
         btn_delete.clicked.connect(self.delete_config)
         row2.addWidget(btn_delete)
+        btn_import = QPushButton("Import…")
+        btn_import.clicked.connect(self.import_config_dialog)
+        row2.addWidget(btn_import)
+        btn_export = QPushButton("Export…")
+        btn_export.clicked.connect(self.export_config_dialog)
+        row2.addWidget(btn_export)
         btn_apply = QPushButton("Apply")
         btn_apply.clicked.connect(self.apply_ui_colors)
         row2.addWidget(btn_apply)
@@ -390,6 +397,23 @@ class KeyboardAppV2(QMainWindow):
             gprof = self._get_global_profile()
             if gprof and (gprof.combos or {}):
                 keys_to_highlight = (gprof.combos or {}).get(key)
+        # Order-insensitive fallback for modifier-only keys
+        if not keys_to_highlight:
+            for k, v in (combos or {}).items():
+                parts = [p.strip() for p in k.split('+') if p.strip()]
+                if all(p in ['Ctrl', 'Shift', 'Alt', 'Win'] for p in parts):
+                    if sorted(parts) == sorted(mods):
+                        keys_to_highlight = v
+                        break
+        if not keys_to_highlight:
+            gprof = self._get_global_profile()
+            if gprof and (gprof.combos or {}):
+                for k, v in (gprof.combos or {}).items():
+                    parts = [p.strip() for p in k.split('+') if p.strip()]
+                    if all(p in ['Ctrl', 'Shift', 'Alt', 'Win'] for p in parts):
+                        if sorted(parts) == sorted(mods):
+                            keys_to_highlight = v
+                            break
         if not keys_to_highlight:
             return
         if self._view_state != 'combo' or self._last_combo_key != key:
@@ -651,6 +675,13 @@ class KeyboardAppV2(QMainWindow):
         self._configs_menu = QMenu("Configs", self)
         menu.addMenu(self._configs_menu)
         self._populate_configs_menu()
+        # Import/Export from tray
+        act_import = QAction("Import Config…", self)
+        act_import.triggered.connect(self.import_config_dialog)
+        self._configs_menu.addAction(act_import)
+        act_export = QAction("Export Current…", self)
+        act_export.triggered.connect(self.export_config_dialog)
+        self._configs_menu.addAction(act_export)
 
         # Presets submenu
         presets_menu = QMenu("Presets", self)
@@ -660,10 +691,13 @@ class KeyboardAppV2(QMainWindow):
             ("Movie", self.apply_movie_preset),
             ("Rainbow", self.apply_rainbow_preset),
             ("Stars", self.apply_stars_preset),
-            ("Ocean", self.apply_ocean_preset),
-            ("Sunset", self.apply_sunset_preset),
-            ("Matrix", self.apply_matrix_preset),
-            ("Fire", self.apply_fire_preset),
+            ("Ocean", lambda: preset_mod.apply_ocean(self)),
+            ("Sunset", lambda: preset_mod.apply_sunset(self)),
+            ("Matrix", lambda: preset_mod.apply_matrix(self)),
+            ("Fire", lambda: preset_mod.apply_fire(self)),
+            ("Firefox", lambda: preset_mod.apply_firefox_preset(self)),
+            ("Dolphin", lambda: preset_mod.apply_dolphin_preset(self)),
+            ("VS Code", lambda: preset_mod.apply_vscode_preset(self)),
         ]:
             act = QAction(title, self)
             act.triggered.connect(handler)
@@ -698,6 +732,33 @@ class KeyboardAppV2(QMainWindow):
                 return lambda: self.load_config(n)
             act.triggered.connect(_make_loader(name))
             self._configs_menu.addAction(act)
+
+    # Import/Export handlers
+    def import_config_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Config", "", "Config JSON (*.json)")
+        if not path:
+            return
+        result = self.config.import_file(path)
+        if result:
+            self.combo.clear()
+            self.combo.addItems(self.config.list_configs())
+            self.combo.setCurrentText(result)
+            self.load_config(result)
+            self._populate_configs_menu()
+        else:
+            QMessageBox.warning(self, "Import Failed", "Could not import the selected config file.")
+
+    def export_config_dialog(self) -> None:
+        name = self.combo.currentText()
+        if not name:
+            QMessageBox.information(self, "No Config", "Please select a config to export.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export Config", f"{name}.json", "Config JSON (*.json)")
+        if not path:
+            return
+        ok = self.config.export_file(name, path)
+        if not ok:
+            QMessageBox.warning(self, "Export Failed", "Could not export the config.")
 
     def toggle_daemon_mode(self) -> None:
         self._daemon_mode = not self._daemon_mode
