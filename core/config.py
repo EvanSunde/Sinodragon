@@ -11,6 +11,7 @@ class ConfigStore:
         self.configs_dir = os.path.join(self.base_dir, "configs")
         os.makedirs(self.configs_dir, exist_ok=True)
         self.index_path = os.path.join(self.base_dir, "configs.json")
+        self.palette_path = os.path.join(self.base_dir, "palette.json")
 
     def list_configs(self) -> List[str]:
         files = []
@@ -105,5 +106,36 @@ class ConfigStore:
             return True
         except Exception:
             return False
+
+    # Global palette helpers
+    def load_palette(self) -> List[Tuple[int, int, int]]:
+        """Load the saved color palette (list of [r,g,b]) from palette.json.
+        Returns an empty list if none exists or on error.
+        """
+        try:
+            if not os.path.exists(self.palette_path):
+                return []
+            with open(self.palette_path, 'r') as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return []
+            out: List[Tuple[int, int, int]] = []
+            for item in data:
+                if isinstance(item, (list, tuple)) and len(item) == 3:
+                    r, g, b = int(item[0]), int(item[1]), int(item[2])
+                    out.append((r, g, b))
+            return out
+        except Exception:
+            return []
+
+    def save_palette(self, colors: List[Tuple[int, int, int]]) -> bool:
+        """Save the given color list into palette.json. Overwrites previous palette."""
+        try:
+            with open(self.palette_path, 'w') as f:
+                json.dump(colors, f, indent=2)
+            return True
+        except Exception:
+            return False
+
 
 

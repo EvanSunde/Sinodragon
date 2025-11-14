@@ -15,6 +15,7 @@ from core.input_monitor import EvdevInputMonitor
 from core.app_profiles import AppProfilesStore, AppProfile
 
 from ui.keyboard_layout import KeyboardLayout
+from ui.color_display import ColorDisplay
 from features import presets as preset_mod
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,12 @@ class KeyboardAppV2(QMainWindow):
         self._baseline_colors = []
         self._view_state = "baseline"  # baseline | app_default | combo
         self._last_combo_key = None
+        # selection state
+        self.selected_indices = set()
+        self.last_clicked_index = None
+        # color state
+        self._current_qcolor = QColor(0, 255, 0)
+        self._saved_colors = self.config.load_palette()
 
         # UI
         central = QWidget()
@@ -109,6 +116,68 @@ class KeyboardAppV2(QMainWindow):
         self.intensity_slider.valueChanged.connect(self.on_intensity_changed)
         row3.addWidget(self.intensity_slider)
         cfg_layout.addLayout(row3)
+
+        # RGB sliders for current color
+        row_rgb = QHBoxLayout()
+        row_rgb.addWidget(QLabel("RGB:"))
+        self.r_slider = QSlider(Qt.Horizontal)
+        self.r_slider.setRange(0, 255)
+        self.g_slider = QSlider(Qt.Horizontal)
+        self.g_slider.setRange(0, 255)
+        self.b_slider = QSlider(Qt.Horizontal)
+        self.b_slider.setRange(0, 255)
+        self.r_val_label = QLabel("0")
+        self.g_val_label = QLabel("0")
+        self.b_val_label = QLabel("0")
+        row_rgb.addWidget(QLabel("R"))
+        row_rgb.addWidget(self.r_slider)
+        row_rgb.addWidget(self.r_val_label)
+        row_rgb.addWidget(QLabel("G"))
+        row_rgb.addWidget(self.g_slider)
+        row_rgb.addWidget(self.g_val_label)
+        row_rgb.addWidget(QLabel("B"))
+        row_rgb.addWidget(self.b_slider)
+        row_rgb.addWidget(self.b_val_label)
+        cfg_layout.addLayout(row_rgb)
+        # sync initial values and connect
+        self._sync_rgb_sliders_to_current()
+        self.r_slider.valueChanged.connect(self._on_rgb_changed)
+        self.g_slider.valueChanged.connect(self._on_rgb_changed)
+        self.b_slider.valueChanged.connect(self._on_rgb_changed)
+
+        # Current color row (moved from Colors tab)
+        rowc = QHBoxLayout()
+        rowc.addWidget(QLabel("Current Color:"))
+        self.current_color_display = ColorDisplay(self._current_qcolor)
+        def _open_color_dialog():
+            self.pick_current_color()
+        self.current_color_display.clicked.connect(_open_color_dialog)
+        rowc.addWidget(self.current_color_display)
+        btn_pick = QPushButton("Pick…")
+        btn_pick.clicked.connect(self.pick_current_color)
+        rowc.addWidget(btn_pick)
+        cfg_layout.addLayout(rowc)
+
+        # Selection actions (moved from Colors tab)
+        row_actions = QHBoxLayout()
+        btn_apply_sel = QPushButton("Apply To Selection")
+        btn_apply_sel.clicked.connect(self.apply_color_to_selection)
+        row_actions.addWidget(btn_apply_sel)
+        btn_clear_sel = QPushButton("Clear Selection")
+        btn_clear_sel.clicked.connect(self.clear_selection)
+        row_actions.addWidget(btn_clear_sel)
+        btn_save_color = QPushButton("Save Color")
+        btn_save_color.clicked.connect(self.save_current_color_to_palette)
+        row_actions.addWidget(btn_save_color)
+        cfg_layout.addLayout(row_actions)
+
+        # Saved colors palette (moved from Colors tab)
+        cfg_layout.addWidget(QLabel("Saved Colors:"))
+        self.palette_container = QWidget()
+        self.palette_layout = QHBoxLayout(self.palette_container)
+        self.palette_layout.setContentsMargins(0, 0, 0, 0)
+        cfg_layout.addWidget(self.palette_container)
+        self._refresh_palette_ui()
 
         tabs.addTab(tab_cfg, "Config")
 
@@ -198,6 +267,10 @@ class KeyboardAppV2(QMainWindow):
                 key.setKeyColor(QColor(int(r), int(g), int(b)))
         self.apply_ui_colors()
         self._save_baseline_from_ui()
+        # reload palette and clear selection
+        self._saved_colors = self.config.load_palette()
+        self._refresh_palette_ui()
+        self.clear_selection()
 
     def save_config(self) -> None:
         colors = self._current_ui_colors()
@@ -615,14 +688,136 @@ class KeyboardAppV2(QMainWindow):
         c = QColorDialog.getColor(getattr(self, '_current_qcolor', QColor(0, 255, 0)), self, "Select Color")
         if c.isValid():
             self._current_qcolor = c
+            if hasattr(self, 'current_color_display'):
+                self.current_color_display.setColor(c)
+            # sync sliders
+            if hasattr(self, 'r_slider'):
+                self._sync_rgb_sliders_to_current()
 
     def handle_key_click(self, key) -> None:
         # KeyboardLayout expects this method on parent
+        try:
+            idx = getattr(key, 'index', None)
+            if idx is None:
+                return
+            mods = QApplication.keyboardModifiers()
+            shift = bool(mods & Qt.ShiftModifier)
+            ctrl = bool(mods & Qt.ControlModifier)
+
+            if shift and self.last_clicked_index is not None:
+                a = min(self.last_clicked_index, idx)
+                b = max(self.last_clicked_index, idx)
+                if not ctrl:
+                    self.selected_indices = set(range(a, b + 1))
+                else:
+                    # union the range with current selection
+                    self.selected_indices.update(range(a, b + 1))
+            elif ctrl:
+                if idx in self.selected_indices:
+                    self.selected_indices.remove(idx)
+                else:
+                    self.selected_indices.add(idx)
+                self.last_clicked_index = idx
+            else:
+                self.selected_indices = {idx}
+                self.last_clicked_index = idx
+
+            self._update_selection_visuals()
+
+            # Preserve previous behavior: clicking paints the clicked key with current color
+            c = getattr(self, '_current_qcolor', QColor(0, 255, 0))
+            if hasattr(key, 'setKeyColor'):
+                key.setKeyColor(c)
+                self.apply_ui_colors()
+        except Exception:
+            pass
+
+    def clear_selection(self) -> None:
+        self.selected_indices = set()
+        self.last_clicked_index = None
+        self._update_selection_visuals()
+
+    def _update_selection_visuals(self) -> None:
+        for k in self.keys:
+            try:
+                k.setSelected(getattr(k, 'index', -1) in self.selected_indices)
+            except Exception:
+                pass
+
+    def apply_color_to_selection(self) -> None:
+        if not self.selected_indices:
+            return
         c = getattr(self, '_current_qcolor', QColor(0, 255, 0))
-        if hasattr(key, 'setKeyColor'):
-            key.setKeyColor(c)
-            # live apply
-            self.apply_ui_colors()
+        for k in self.keys:
+            idx = getattr(k, 'index', None)
+            if idx in self.selected_indices and hasattr(k, 'setKeyColor'):
+                k.setKeyColor(c)
+        self.apply_ui_colors()
+
+    def save_current_color_to_palette(self) -> None:
+        c = getattr(self, '_current_qcolor', QColor(0, 255, 0))
+        rgb = (int(c.red()), int(c.green()), int(c.blue()))
+        if rgb not in self._saved_colors:
+            self._saved_colors.append(rgb)
+            # keep palette reasonably small
+            if len(self._saved_colors) > 24:
+                self._saved_colors = self._saved_colors[-24:]
+            self.config.save_palette(self._saved_colors)
+            self._refresh_palette_ui()
+
+    def _refresh_palette_ui(self) -> None:
+        if not hasattr(self, 'palette_layout') or self.palette_layout is None:
+            return
+        # clear existing widgets
+        while self.palette_layout.count():
+            item = self.palette_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        # add each saved color as a small swatch
+        for (r, g, b) in (self._saved_colors or []):
+            swatch = ColorDisplay(QColor(int(r), int(g), int(b)))
+            def _make_setter(color_tuple):
+                def _on_click():
+                    self._set_current_color_from_palette(color_tuple)
+                return _on_click
+            swatch.clicked.connect(_make_setter((int(r), int(g), int(b))))
+            self.palette_layout.addWidget(swatch)
+
+    def _set_current_color_from_palette(self, rgb: Tuple[int, int, int]) -> None:
+        self._current_qcolor = QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        if hasattr(self, 'current_color_display'):
+            self.current_color_display.setColor(self._current_qcolor)
+        if hasattr(self, 'r_slider'):
+            self._sync_rgb_sliders_to_current()
+
+    def _on_rgb_changed(self) -> None:
+        try:
+            r = int(self.r_slider.value())
+            g = int(self.g_slider.value())
+            b = int(self.b_slider.value())
+            self._current_qcolor = QColor(r, g, b)
+            if hasattr(self, 'current_color_display'):
+                self.current_color_display.setColor(self._current_qcolor)
+            self._update_rgb_value_labels(r, g, b)
+        except Exception:
+            pass
+
+    def _sync_rgb_sliders_to_current(self) -> None:
+        c = getattr(self, '_current_qcolor', QColor(0, 255, 0))
+        if hasattr(self, 'r_slider'):
+            self.r_slider.setValue(int(c.red()))
+            self.g_slider.setValue(int(c.green()))
+            self.b_slider.setValue(int(c.blue()))
+        self._update_rgb_value_labels(int(c.red()), int(c.green()), int(c.blue()))
+
+    def _update_rgb_value_labels(self, r: int, g: int, b: int) -> None:
+        if hasattr(self, 'r_val_label'):
+            self.r_val_label.setText(str(int(r)))
+        if hasattr(self, 'g_val_label'):
+            self.g_val_label.setText(str(int(g)))
+        if hasattr(self, 'b_val_label'):
+            self.b_val_label.setText(str(int(b)))
 
     def on_intensity_changed(self, value: int) -> None:
         self.intensity = max(0.05, min(1.0, value / 100.0))
