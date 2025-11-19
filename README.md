@@ -1,5 +1,7 @@
 # Sinodragon – Hyprland-aware keyboard lighting
 
+## NEW Cpp port of this made. It uses lot less RAM and CPU usages and has animated preset too : LINK [https://github.com/EvanSunde/Sinodragon-cpp]
+
 ## Overview
 Sinodragon is a PyQt-based app that controls per-key RGB lighting on supported keyboards. It reacts to the currently focused application on Hyprland (Wayland) via the events socket and can highlight app-specific shortcuts on key press. It also supports a global fallback profile, live UI editing, presets, and a background daemon mode from the system tray.
 
